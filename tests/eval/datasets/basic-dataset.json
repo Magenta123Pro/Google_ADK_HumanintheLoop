@@ -1,0 +1,59 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "case_ineligible_age_young",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\\\"name\\\": \\\"Carol\\\", \\\"age\\\": 30, \\\"gender\\\": \\\"female\\\", \\\"perimenopause_status\\\": \\\"yes\\\", \\\"answers\\\": {}}"
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "case_ineligible_age_zero",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\\\"name\\\": \\\"Alice\\\", \\\"age\\\": 0, \\\"gender\\\": \\\"female\\\", \\\"perimenopause_status\\\": \\\"yes\\\", \\\"answers\\\": {}}"
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "case_ineligible_gender_male",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\\\"name\\\": \\\"Bob\\\", \\\"age\\\": 40, \\\"gender\\\": \\\"male\\\", \\\"perimenopause_status\\\": \\\"no\\\", \\\"answers\\\": {}}"
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "case_eligible_high_score",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\\\"name\\\": \\\"Diana\\\", \\\"age\\\": 45, \\\"gender\\\": \\\"female\\\", \\\"perimenopause_status\\\": \\\"yes\\\", \\\"answers\\\": {\\\"Estrogen\\\": \\\"Strength training or eating cruciferous vegetables\\\", \\\"Progesterone\\\": \\\"Breathwork/meditation, zinc, or limiting alcohol\\\", \\\"Insulin\\\": \\\"Fiber-first eating, post-meal walk, or 12-hour rest\\\", \\\"Cortisol\\\": \\\"Caffeine elimination after noon, nature immersion, or stretching\\\", \\\"LH_FSH\\\": \\\"Adequate calories, consistent sleep, or acupuncture\\\", \\\"Melatonin\\\": \\\"Morning sunlight exposure, blue-light block, or magnesium\\\"}}"
+          }
+        ]
+      }
+    },
+    {
+      "eval_case_id": "case_eligible_low_score",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "{\\\"name\\\": \\\"Eve\\\", \\\"age\\\": 48, \\\"gender\\\": \\\"female\\\", \\\"perimenopause_status\\\": \\\"yes\\\", \\\"answers\\\": {\\\"Estrogen\\\": \\\"Strength training or eating cruciferous vegetables\\\", \\\"Progesterone\\\": \\\"Drinking late-night wine and staying highly stressed\\\", \\\"Insulin\\\": \\\"Fiber-first eating, post-meal walk, or 12-hour rest\\\", \\\"Cortisol\\\": \\\"Drinking a double espresso at 4:00 PM\\\", \\\"LH_FSH\\\": \\\"Adequate calories, consistent sleep, or acupuncture\\\", \\\"Melatonin\\\": \\\"Morning sunlight exposure, blue-light block, or magnesium\\\"}}"
+          }
+        ]
+      }
+    }
+  ]
+}

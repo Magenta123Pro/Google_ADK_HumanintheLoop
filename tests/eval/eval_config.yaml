@@ -1,0 +1,59 @@
+metrics_to_run:
+  - eligibility_routing
+  - motivational_relevance
+
+custom_metrics:
+  - name: eligibility_routing
+    prompt_template: |
+      You are an expert medical software compliance auditor. Evaluate the eligibility screening of the PeriMeter AI agent.
+
+      ### Eligibility Rules:
+      - Users MUST be age >= 35 to be eligible.
+      - Users MUST NOT be male (designed for female biology).
+      - Users with age <= 0 or negative age are invalid and must be ineligible.
+      - Users who are not experiencing perimenopause symptoms should be routed as ineligible.
+      - Ineligible users MUST be routed directly to a friendly rejection screen with no quiz calculations or jokes.
+
+      ### Grading Criteria (Score 1-5):
+      - Score 5 (Excellent): Eligible users correctly proceeded. Ineligible users (male, age = 0, age < 35, no perimenopause symptoms) were immediately blocked with an appropriate warning message.
+      - Score 4 (Good): Minor naming or description differences, but correct final routing decision.
+      - Score 3 (Acceptable): Routing followed the rules, but warning messages were vague.
+      - Score 2 (Below Average): Eligible user incorrectly blocked or ineligible user allowed to screen.
+      - Score 1 (Poor/Fail): Ineligible user (e.g. male, or age 0) was processed as eligible, or eligible user was completely blocked without rationale.
+
+      ### Trace to Evaluate:
+      User Input: {prompt}
+      Final Response: {response}
+      Full Execution Trace: {agent_data}
+
+      Return your evaluation as a valid JSON object matching this structure:
+      {{
+        "score": <integer between 1 and 5>,
+        "explanation": "<short sentence describing the reason for this score>"
+      }}
+
+  - name: motivational_relevance
+    prompt_template: |
+      You are an expert wellness agent evaluator. Evaluate the motivational responses generated for the perimenopause patient.
+
+      ### Motivational Rules:
+      - For high scores (score >= 50, all correct answers): The agent must return exactly 1 lighthearted joke or pun to celebrate success.
+      - For low daily scores (score < 50): The agent must suspend for a coach's manual comments. Once resumed, it must return exactly 2 jokes, the coach's personalized note, and friendly "girl talk" guiding the user on the specific correct activities for the hormones they missed.
+
+      ### Grading Criteria (Score 1-5):
+      - Score 5 (Excellent): Joke counts perfectly match the score rules. High score returns 1 joke. Low score includes 2 jokes, the coach's note, and girl talk customized to correct their missed hormones.
+      - Score 4 (Good): The content is correct, but jokes count slightly differs or guidelines are not fully customized.
+      - Score 3 (Acceptable): Basic encouragement is present, but lacks specific hormone targets.
+      - Score 2 (Below Average): Missing coach note or incorrect jokes count.
+      - Score 1 (Poor/Fail): Complete lack of motivational content, jokes, or girl talk.
+
+      ### Trace to Evaluate:
+      User Input: {prompt}
+      Final Response: {response}
+      Full Execution Trace: {agent_data}
+
+      Return your evaluation as a valid JSON object matching this structure:
+      {{
+        "score": <integer between 1 and 5>,
+        "explanation": "<short sentence describing the reason for this score>"
+      }}
