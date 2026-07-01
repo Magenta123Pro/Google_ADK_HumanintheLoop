@@ -575,6 +575,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                         <option value="no">No</option>
                     </select>
                 </div>
+                <div id="onboarding-error-banner" class="error-banner hidden" style="margin-top: 1rem; margin-bottom: 1rem;"></div>
                 <button class="btn btn-primary" onclick="proceedToQuiz()" style="margin-top: 1rem;">Next</button>
             </div>
 
@@ -679,6 +680,9 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             const age = parseInt(document.getElementById('age').value);
             const gender = document.getElementById('gender').value;
             const peri = document.getElementById('perimenopause_status').value;
+            
+            const errBanner = document.getElementById('onboarding-error-banner');
+            errBanner.classList.add('hidden');
 
             if (!name) {
                 alert('Please enter your name.');
@@ -686,6 +690,28 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             }
             if (isNaN(age) || age < 0) {
                 alert('Please enter a valid age.');
+                return;
+            }
+
+            // Client-side eligibility checks
+            if (age === 0) {
+                errBanner.innerText = 'Age cannot be zero or negative.';
+                errBanner.classList.remove('hidden');
+                return;
+            }
+            if (gender === 'male') {
+                errBanner.innerText = 'PeriMeter AI is designed for individuals of female biology.';
+                errBanner.classList.remove('hidden');
+                return;
+            }
+            if (age < 35) {
+                errBanner.innerText = 'PeriMeter AI is optimized for ages 35+.';
+                errBanner.classList.remove('hidden');
+                return;
+            }
+            if (peri !== 'yes') {
+                errBanner.innerText = 'PeriMeter AI is designed for those experiencing perimenopause.';
+                errBanner.classList.remove('hidden');
                 return;
             }
 
@@ -872,6 +898,10 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('gender').value = 'female';
             document.getElementById('perimenopause_status').value = 'yes';
             
+            const errBanner = document.getElementById('onboarding-error-banner');
+            errBanner.innerText = '';
+            errBanner.classList.add('hidden');
+
             document.getElementById('results-dashboard').classList.add('hidden');
             document.getElementById('screening-error').classList.add('hidden');
             document.getElementById('onboarding-form').classList.remove('hidden');

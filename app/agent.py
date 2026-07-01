@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from typing import Any
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
@@ -10,6 +11,9 @@ from google.adk.events.request_input import RequestInput
 from google.adk.workflow import START, Edge, Workflow, node
 from google.genai import Client, types
 from pydantic import BaseModel, Field
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from app.config import HORMONE_ACTIVITIES, MODEL_NAME
 
@@ -92,13 +96,40 @@ def check_eligibility(ctx: Context, node_input: OnboardingData) -> Event:
     ctx.state["eligible"] = True
     return Event(output=node_input, route="eligible")
 
+async def fetch_hormone_guidelines_from_mcp() -> dict[str, str]:
+    try:
+        python_exe = sys.executable or "python"
+        server_path = os.path.join(os.path.dirname(__file__), "mcp_server.py")
+        server_params = StdioServerParameters(
+            command=python_exe,
+            args=[server_path]
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                response = await session.call_tool("get_hormone_guidelines", {})
+                if response and len(response) > 0 and response[0].text:
+                    return json.loads(response[0].text)
+    except Exception:
+        pass
+    
+    # Fallback to local config correct activity descriptions
+    fallback = {}
+    for h, data in HORMONE_ACTIVITIES.items():
+        correct_desc = next((o["text"] for o in data["options"] if o["correct"]), "balance activities")
+        fallback[h] = correct_desc
+    return fallback
+
 @node
-def calculate_score(ctx: Context, node_input: OnboardingData) -> Event:
+async def calculate_score(ctx: Context, node_input: OnboardingData) -> Event:
     """Calculates daily score based on correct/incorrect activities."""
     answers = node_input.answers
     score = 0
     correct_hormones = []
     incorrect_hormones = []
+    
+    # Fetch guidelines from MCP server
+    mcp_guidelines = await fetch_hormone_guidelines_from_mcp()
     
     for hormone, activity_text in answers.items():
         if hormone in HORMONE_ACTIVITIES:
@@ -119,6 +150,7 @@ def calculate_score(ctx: Context, node_input: OnboardingData) -> Event:
     ctx.state["score"] = score
     ctx.state["correct_hormones"] = correct_hormones
     ctx.state["incorrect_hormones"] = incorrect_hormones
+    ctx.state["mcp_guidelines"] = mcp_guidelines
 
     if score >= 50:
         return Event(output=node_input, route="high_score")
@@ -186,12 +218,11 @@ def finalize_report(ctx: Context, node_input: Any) -> Event:
         )
         girl_talk = f"Amazing job, {name}! You scored a {score}/60 today. Keep up these wonderful habits to stay in balance!"
     else:
-        # Retrieve the correct activities for the missed hormones to display in "girl talk"
+        mcp_guidelines = ctx.state.get("mcp_guidelines", {})
         guidelines = []
         for h in incorrect:
-            if h in HORMONE_ACTIVITIES:
-                correct_desc = next((o["text"] for o in HORMONE_ACTIVITIES[h]["options"] if o["correct"]), "balance activities")
-                guidelines.append(f"- {h}: Focus on {correct_desc}")
+            correct_desc = mcp_guidelines.get(h, "balance activities")
+            guidelines.append(f"- {h}: Focus on {correct_desc}")
                 
         prompt = (
             f"Write exactly 2 clean, funny, and lighthearted jokes or puns about hormones, sleep, or women's midlife struggles to cheer up a perimenopausal woman named {name}.\n"
