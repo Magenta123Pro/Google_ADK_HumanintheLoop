@@ -1,0 +1,11 @@
+.git
+.venv
+.pytest_cache
+tests
+artifacts
+specs
+.agents
+.semgrep
+*.log
+*.db
+.env

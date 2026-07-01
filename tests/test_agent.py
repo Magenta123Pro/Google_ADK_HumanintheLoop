@@ -167,3 +167,61 @@ def test_eligible_low_score_hitl() -> None:
     assert len(report["jokes"]) == 2
     assert "aim to do stretching" in report["coach_note"].lower()
     assert "Cortisol" in report["girl_talk"] or "Melatonin" in report["girl_talk"] or "LH_FSH" in report["girl_talk"]
+
+def test_multiple_options_scoring() -> None:
+    session_service = InMemorySessionService()
+    session = session_service.create_session_sync(user_id="test_user", app_name="perimeter_agent")
+    runner = Runner(agent=root_agent, session_service=session_service, app_name="perimeter_agent")
+
+    # For Estrogen: select 1 correct option and 1 incorrect option (scores 10 - 5 = 5 points)
+    # For Progesterone: select 1 correct option (scores 10 points)
+    # Others: select nothing (scores 0 points and counts as incorrect)
+    answers = {
+        "Estrogen": [
+            "Strength training or eating cruciferous vegetables", # correct
+            "Skipping hydration and eating processed foods"       # incorrect
+        ],
+        "Progesterone": [
+            "Breathwork/meditation, zinc, or limiting alcohol"    # correct
+        ],
+        "Insulin": [],
+        "Cortisol": [],
+        "LH_FSH": [],
+        "Melatonin": []
+    }
+
+    payload = {
+        "name": "Diana",
+        "age": 45,
+        "gender": "female",
+        "perimenopause_status": "yes",
+        "answers": answers
+    }
+    message = types.Content(role="user", parts=[types.Part.from_text(text=json.dumps(payload))])
+    events = list(runner.run(new_message=message, user_id="test_user", session_id=session.id))
+    
+    interrupted = False
+    interrupt_id = None
+    for event in events:
+        if has_request_input_function_call(event):
+            interrupted = True
+            ids = get_request_input_interrupt_ids(event)
+            if ids:
+                interrupt_id = ids[0]
+                break
+
+    assert interrupted is True
+    assert interrupt_id == "coach_note"
+
+    response_part = create_request_input_response(interrupt_id, {"coach_note": "Good start!"})
+    resume_message = types.Content(role="user", parts=[response_part])
+    
+    resume_events = list(runner.run(new_message=resume_message, user_id="test_user", session_id=session.id))
+    report = get_final_report(resume_events)
+    
+    # Estrogen: 10 - 5 = 5
+    # Progesterone: 10
+    # Total expected score = 5 + 10 = 15
+    assert report is not None
+    assert report["eligible"] is True
+    assert report["score"] == 15

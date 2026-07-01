@@ -27,7 +27,7 @@ class OnboardingData(BaseModel):
     age: int = Field(description="Age of the user")
     gender: str = Field(description="Gender of the user")
     perimenopause_status: str = Field(description="Is the user experiencing perimenopause? (yes/no)")
-    answers: dict[str, str] = Field(description="Selected answers for each hormone")
+    answers: dict[str, Any] = Field(description="Selected answers for each hormone")
 
 @node
 def parse_input(ctx: Context, node_input: Any) -> Event:
@@ -131,20 +131,46 @@ async def calculate_score(ctx: Context, node_input: OnboardingData) -> Event:
     # Fetch guidelines from MCP server
     mcp_guidelines = await fetch_hormone_guidelines_from_mcp()
     
-    for hormone, activity_text in answers.items():
+    for hormone, selected_val in answers.items():
+        if isinstance(selected_val, str):
+            selected_list = [selected_val]
+        elif isinstance(selected_val, list):
+            selected_list = selected_val
+        else:
+            selected_list = []
+
         if hormone in HORMONE_ACTIVITIES:
-            # Find the option text matching the selected text
-            matched_option = None
-            for opt in HORMONE_ACTIVITIES[hormone]["options"]:
-                if opt["text"] == activity_text:
-                    matched_option = opt
-                    break
+            hormone_correct_options = []
+            hormone_incorrect_options = []
             
-            if matched_option and matched_option["correct"]:
+            for activity_text in selected_list:
+                matched_option = None
+                for opt in HORMONE_ACTIVITIES[hormone]["options"]:
+                    if opt["text"] == activity_text:
+                        matched_option = opt
+                        break
+                
+                if matched_option:
+                    if matched_option["correct"]:
+                        hormone_correct_options.append(activity_text)
+                    else:
+                        hormone_incorrect_options.append(activity_text)
+            
+            # If user selects more than one option for the same hormone:
+            # - First correct option gets 10 points
+            # - Other correct options get 3 points each
+            # - Incorrect options get -5 points each
+            if hormone_correct_options:
                 score += 10
+                score += (len(hormone_correct_options) - 1) * 3
                 correct_hormones.append(hormone)
-            else:
-                score -= 5
+            
+            if hormone_incorrect_options:
+                score += len(hormone_incorrect_options) * (-5)
+                if hormone not in correct_hormones:
+                    incorrect_hormones.append(hormone)
+                    
+            if not selected_list:
                 incorrect_hormones.append(hormone)
 
     ctx.state["score"] = score

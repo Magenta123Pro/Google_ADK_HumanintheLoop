@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -15,31 +16,77 @@ from google.genai import types
 
 from app.agent import root_agent
 from app.config import HORMONE_ACTIVITIES
+from app.database import (
+    register_user,
+    authenticate_user,
+    save_daily_log,
+    save_coach_note,
+    get_user_logs
+)
 
-app = FastAPI(title="PeriMeter AI - Hormonal Balance Motivator")
+app = FastAPI(title="Perimeter AI - Hormonal Balance Motivator")
 
 # Initialize ADK runtime services
 session_service = InMemorySessionService()
 runner = Runner(agent=root_agent, session_service=session_service, app_name="perimeter_agent")
 
-# In-memory store for UI to track session states
+# In-memory store for UI to track active agent runs
 active_sessions = {}
 pending_reviews = {}
 
 class SubmitQuizPayload(BaseModel):
+    user_id: int
     name: str
     age: int
     gender: str
     perimenopause_status: str
-    answers: dict[str, str]
+    answers: dict[str, list[str]]
 
 class CoachReviewPayload(BaseModel):
     coach_note: str
+
+class RegisterPayload(BaseModel):
+    username: str
+    password: str
+    name: str
+    age: int
+    gender: str
+    perimenopause_status: str
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
 
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard():
     # Renders the HTML template containing the UI and Coach Portal
     return HTMLResponse(content=INDEX_HTML_TEMPLATE)
+
+@app.post("/api/auth/register")
+async def handle_register(payload: RegisterPayload):
+    res = register_user(
+        username=payload.username,
+        password=payload.password,
+        name=payload.name,
+        age=payload.age,
+        gender=payload.gender,
+        perimenopause_status=payload.perimenopause_status
+    )
+    if res["success"]:
+        return JSONResponse(content={"success": True, "user_id": res["user_id"]})
+    return JSONResponse(status_code=400, content={"error": res["error"]})
+
+@app.post("/api/auth/login")
+async def handle_login(payload: LoginPayload):
+    res = authenticate_user(payload.username, payload.password)
+    if res["success"]:
+        return JSONResponse(content={"success": True, "user": res["user"]})
+    return JSONResponse(status_code=400, content={"error": res["error"]})
+
+@app.get("/api/logs")
+async def handle_get_logs(user_id: int):
+    logs = get_user_logs(user_id)
+    return JSONResponse(content=logs)
 
 @app.get("/api/hormones")
 async def get_hormone_questions():
@@ -55,6 +102,7 @@ async def get_hormone_questions():
 @app.post("/api/submit")
 async def submit_quiz(payload: SubmitQuizPayload):
     try:
+        user_id = payload.user_id
         # Create a new session
         session = session_service.create_session_sync(user_id="user_uid", app_name="perimeter_agent")
         session_id = session.id
@@ -89,6 +137,7 @@ async def submit_quiz(payload: SubmitQuizPayload):
             # Workflow is suspended waiting for coach input
             pending_reviews[session_id] = {
                 "session_id": session_id,
+                "user_id": user_id,
                 "name": payload.name,
                 "age": payload.age,
                 "gender": payload.gender,
@@ -102,7 +151,7 @@ async def submit_quiz(payload: SubmitQuizPayload):
                 "message": "Your score is under 50. A Health Coach will review your report shortly to provide personalized encouragement!"
             })
             
-        # If not interrupted, it means it completed (either ineligible or score >= 50)
+        # If not interrupted, it completed (either ineligible or score >= 50)
         final_report = None
         for event in events:
             if event.output and isinstance(event.output, dict):
@@ -114,6 +163,19 @@ async def submit_quiz(payload: SubmitQuizPayload):
                 "status": "completed",
                 "data": final_report
             }
+            
+            # Save daily log to database
+            if final_report.get("eligible", False):
+                date_str = datetime.now().strftime("%Y-%m-%d")
+                save_daily_log(
+                    user_id=user_id,
+                    date=date_str,
+                    score=final_report["score"],
+                    answers=payload.answers,
+                    jokes=final_report["jokes"],
+                    girl_talk=final_report["girl_talk"]
+                )
+            
             return JSONResponse(content={
                 "status": "completed",
                 "session_id": session_id,
@@ -135,6 +197,7 @@ async def submit_coach_review(session_id: str, payload: CoachReviewPayload):
         
     review_info = pending_reviews[session_id]
     interrupt_id = review_info["interrupt_id"]
+    user_id = review_info["user_id"]
     
     try:
         # Create resume response message using coach note
@@ -166,6 +229,19 @@ async def submit_coach_review(session_id: str, payload: CoachReviewPayload):
                 "status": "completed",
                 "data": final_report
             }
+            
+            # Save daily log and coach note to database
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            save_daily_log(
+                user_id=user_id,
+                date=date_str,
+                score=final_report["score"],
+                answers=review_info["answers"],
+                jokes=final_report["jokes"],
+                girl_talk=final_report["girl_talk"]
+            )
+            save_coach_note(user_id, date_str, payload.coach_note)
+            
             return JSONResponse(content={
                 "status": "completed",
                 "session_id": session_id,
@@ -188,7 +264,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PeriMeter AI - Hormonal Balance Motivator</title>
+    <title>Perimeter AI - Hormonal Balance Motivator</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -228,6 +304,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             padding: 1.5rem 0;
             text-align: center;
             border-bottom: 2px solid #e9d5ff;
+            position: relative;
         }
 
         header h1 {
@@ -245,6 +322,22 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             font-weight: 400;
         }
 
+        .user-profile-badge {
+            position: absolute;
+            right: 2rem;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 0.5rem 1rem;
+            border-radius: 9999px;
+            border: 1px solid #e9d5ff;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
         main {
             max-width: 900px;
             width: 95%;
@@ -254,7 +347,6 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             gap: 2rem;
         }
 
-        /* Glassmorphic Cards */
         .card {
             background-color: rgba(255, 255, 255, 0.7);
             backdrop-filter: blur(10px);
@@ -263,11 +355,6 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             padding: 2.5rem;
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.03), 0 4px 6px -2px rgba(0, 0, 0, 0.02);
             transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        .card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.05);
         }
 
         h2 {
@@ -289,7 +376,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             color: #4b5563;
         }
 
-        input[type="text"], input[type="number"], select {
+        input[type="text"], input[type="number"], input[type="password"], select {
             font-family: var(--font-family);
             padding: 0.8rem 1.2rem;
             border-radius: 0.75rem;
@@ -300,7 +387,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             transition: border-color 0.2s;
         }
 
-        input[type="text"]:focus, input[type="number"]:focus, select:focus {
+        input[type="text"]:focus, input[type="number"]:focus, input[type="password"]:focus, select:focus {
             border-color: var(--pastel-purple);
         }
 
@@ -321,21 +408,12 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             border: 2px solid #d8b4fe;
         }
 
-        .btn-primary:hover {
-            background-color: #d8b4fe;
-        }
-
         .btn-secondary {
             background-color: var(--card-peach);
             color: #c2410c;
             border: 2px solid #ffedd5;
         }
 
-        .btn-secondary:hover {
-            background-color: #ffedd5;
-        }
-
-        /* Radio Options styling */
         .hormone-section {
             margin-bottom: 2rem;
             border-bottom: 1px solid #f3e8ff;
@@ -349,13 +427,13 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             margin-bottom: 0.8rem;
         }
 
-        .radio-options {
+        .checkbox-options {
             display: flex;
             flex-direction: column;
             gap: 0.6rem;
         }
 
-        .radio-label {
+        .checkbox-label {
             display: flex;
             align-items: center;
             gap: 0.8rem;
@@ -367,23 +445,22 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             transition: all 0.2s;
         }
 
-        .radio-label:hover {
+        .checkbox-label:hover {
             background-color: #fff7ed;
             border-color: #fed7aa;
         }
 
-        .radio-label input[type="radio"] {
+        .checkbox-label input[type="checkbox"] {
             width: 1.2rem;
             height: 1.2rem;
             accent-color: var(--pastel-orange);
         }
 
-        .radio-label.selected {
+        .checkbox-label.selected {
             background-color: #ffedd5;
             border-color: var(--pastel-orange);
         }
 
-        /* Dashboard Results styling */
         .score-badge {
             display: inline-block;
             padding: 0.5rem 1.5rem;
@@ -405,48 +482,102 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             border: 2px solid #fecdd3;
         }
 
-        .joke-box {
-            background-color: rgba(255, 255, 255, 0.9);
-            border-left: 6px solid var(--pastel-purple);
-            padding: 1.2rem;
-            border-radius: 0.5rem;
-            font-style: italic;
+        .calendar-container {
+            margin-top: 2rem;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 2rem;
+            border-radius: 1rem;
+            border: 1px solid #e9d5ff;
+        }
+
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 0.5rem;
             margin-top: 1rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02);
         }
 
-        .girl-talk-box {
-            background-color: var(--accent-rose);
-            border: 2px solid #ffe4e6;
-            padding: 1.5rem;
-            border-radius: 1rem;
-            margin-top: 1.5rem;
-            line-height: 1.6;
-        }
-
-        .girl-talk-title {
+        .calendar-day-header {
+            text-align: center;
             font-weight: 600;
-            font-size: 1.3rem;
-            color: var(--rose-text);
-            margin-bottom: 0.5rem;
+            color: var(--text-muted);
+            padding: 0.5rem 0;
+            font-size: 0.9rem;
         }
 
-        .coach-note-box {
-            background-color: var(--accent-mint);
-            border: 2px solid #dcfce7;
-            padding: 1.5rem;
-            border-radius: 1rem;
-            margin-top: 1.5rem;
+        .calendar-cell {
+            background-color: rgba(255, 255, 255, 0.5);
+            border: 1px solid rgba(233, 213, 255, 0.5);
+            border-radius: 0.5rem;
+            min-height: 4.5rem;
+            padding: 0.3rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: flex-start;
         }
 
-        .coach-note-title {
+        .calendar-cell.blank {
+            background-color: transparent;
+            border: none;
+        }
+
+        .date-num {
+            font-weight: 500;
+            font-size: 0.95rem;
+            color: var(--text-dark);
+        }
+
+        .score-indicator {
+            align-self: center;
+            font-size: 0.85rem;
+            font-weight: 700;
+            padding: 0.2rem 0.5rem;
+            border-radius: 0.25rem;
+            width: 80%;
+            text-align: center;
+            margin-top: 0.3rem;
+        }
+
+        .score-indicator.high {
+            background-color: #dcfce7;
+            color: #166534;
+        }
+
+        .score-indicator.low {
+            background-color: #ffe4e6;
+            color: #9f1239;
+        }
+
+        .auth-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .auth-toggle {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .auth-toggle a {
+            cursor: pointer;
+            color: var(--text-muted);
             font-weight: 600;
-            font-size: 1.3rem;
-            color: var(--mint-text);
-            margin-bottom: 0.5rem;
+            font-size: 1.2rem;
+            text-decoration: none;
+            padding-bottom: 0.3rem;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
         }
 
-        /* Review portal table */
+        .auth-toggle a.active {
+            color: #6b21a8;
+            border-bottom-color: #6b21a8;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -459,23 +590,12 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             border-bottom: 1px solid #e9d5ff;
         }
 
-        th {
-            color: #6b21a8;
-            font-weight: 600;
-        }
-
         .textarea-coach {
             font-family: var(--font-family);
             width: 100%;
             padding: 0.8rem;
             border-radius: 0.5rem;
             border: 2px solid #e9d5ff;
-            resize: vertical;
-            outline: none;
-        }
-
-        .textarea-coach:focus {
-            border-color: var(--pastel-purple);
         }
 
         .tab-buttons {
@@ -533,111 +653,126 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 
     <header>
-        <h1>PeriMeter AI</h1>
+        <h1>Perimeter AI</h1>
         <p>Your Gentle Guide to Daily Hormonal Balance • Agents for Good</p>
+        <div id="user-header-badge" class="user-profile-badge hidden">
+            <span id="user-display-name">Guest</span>
+            <button class="btn btn-secondary" onclick="handleLogout()" style="padding: 0.2rem 0.8rem; font-size: 0.85rem; border-radius: 0.5rem;">Logout</button>
+        </div>
     </header>
 
     <main>
-        <!-- Tab Navigation -->
         <div class="tab-buttons">
             <button class="tab-btn active" id="tab-app" onclick="switchTab('app')">Motivator App</button>
             <button class="tab-btn" id="tab-portal" onclick="switchTab('portal')">Health Coach Portal</button>
         </div>
 
-        <!-- Section 1: Motivator App -->
-        <section id="section-app" class="card">
-            <!-- Phase 1: Onboarding -->
-            <div id="onboarding-form">
-                <h2>Welcome to PeriMeter AI</h2>
-                <p style="color: var(--text-muted); margin-bottom: 2rem;">
-                    Let's screen your details to make sure you are in our target wellness range.
-                </p>
+        <section id="section-auth" class="card">
+            <div class="auth-toggle">
+                <a id="toggle-login" class="active" onclick="switchAuthTab('login')">Login</a>
+                <a id="toggle-register" onclick="switchAuthTab('register')">Register & Onboard</a>
+            </div>
+            
+            <div id="login-form" class="auth-container">
+                <h2>Login to Perimeter AI</h2>
                 <div class="form-group">
-                    <label for="name">What is your name?</label>
-                    <input type="text" id="name" placeholder="Enter your name" required>
+                    <label for="login-username">Username</label>
+                    <input type="text" id="login-username" placeholder="Enter username">
                 </div>
                 <div class="form-group">
-                    <label for="age">What is your age?</label>
-                    <input type="number" id="age" min="0" placeholder="Enter your age" required>
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" placeholder="Enter password">
+                </div>
+                <div id="login-error-banner" class="error-banner hidden"></div>
+                <button class="btn btn-primary" onclick="handleLogin()" style="margin-top: 1rem;">Login</button>
+            </div>
+            
+            <div id="register-form" class="auth-container hidden">
+                <h2>Create Wellness Account</h2>
+                <div class="form-group">
+                    <label for="reg-username">Username</label>
+                    <input type="text" id="reg-username" placeholder="Choose a username">
                 </div>
                 <div class="form-group">
-                    <label for="gender">What is your gender?</label>
-                    <select id="gender">
+                    <label for="reg-password">Password</label>
+                    <input type="password" id="reg-password" placeholder="Choose a password">
+                </div>
+                <div class="form-group">
+                    <label for="reg-name">What is your name?</label>
+                    <input type="text" id="reg-name" placeholder="Enter your name">
+                </div>
+                <div class="form-group">
+                    <label for="reg-age">What is your age?</label>
+                    <input type="number" id="reg-age" min="0" placeholder="Enter your age">
+                </div>
+                <div class="form-group">
+                    <label for="reg-gender">What is your gender?</label>
+                    <select id="reg-gender">
                         <option value="female">Female</option>
                         <option value="male">Male</option>
                         <option value="other">Other</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="perimenopause_status">Are you experiencing symptoms of perimenopause?</label>
-                    <select id="perimenopause_status">
+                    <label for="reg-perimenopause_status">Are you experiencing symptoms of perimenopause?</label>
+                    <select id="reg-perimenopause_status">
                         <option value="yes">Yes, currently experiencing symptoms</option>
                         <option value="no">No</option>
                     </select>
                 </div>
-                <div id="onboarding-error-banner" class="error-banner hidden" style="margin-top: 1rem; margin-bottom: 1rem;"></div>
-                <button class="btn btn-primary" onclick="proceedToQuiz()" style="margin-top: 1rem;">Next</button>
+                <div id="register-error-banner" class="error-banner hidden"></div>
+                <button class="btn btn-primary" onclick="handleRegister()" style="margin-top: 1rem;">Create Account & Onboard</button>
             </div>
+        </section>
 
-            <!-- Phase 2: Hormone Quiz -->
-            <div id="quiz-form" class="hidden">
+        <section id="section-app" class="card hidden">
+            <div id="quiz-form">
                 <h2 id="quiz-heading">Daily Hormone Activity Log</h2>
                 <p style="color: var(--text-muted); margin-bottom: 2rem;">
                     Hormone levels shift based on our daily practices. Let's record which target activities you engaged in today.
                 </p>
-                
                 <div id="questions-container"></div>
-                
                 <div style="display: flex; gap: 1rem; margin-top: 2rem;">
-                    <button class="btn btn-secondary" onclick="backToOnboarding()">Back</button>
                     <button class="btn btn-primary" onclick="submitQuiz()">Submit Daily Log</button>
                 </div>
             </div>
 
-            <!-- Loading Spinner -->
             <div id="loading" class="hidden">
                 <div class="spinner"></div>
                 <p style="text-align: center; color: var(--text-muted);">Running Agent Graph Workflow...</p>
             </div>
 
-            <!-- Review Interruption Notice -->
             <div id="pending-review-notice" class="hidden">
                 <div class="score-badge score-fail">Reviewing with Coach</div>
                 <h2>Almost there!</h2>
-                <p>Because your score is under 50, your results have been routed to our Health Coach team for a Human-in-the-Loop review. They will add personal encouragement and support recommendations shortly.</p>
+                <p>Because your score is under 50, your results are pending Coach review.</p>
                 <div class="spinner"></div>
-                <p style="text-align: center; color: var(--text-muted); font-size: 0.9rem;">Waiting for coach approval... (You can review this session in the Coach Portal tab)</p>
             </div>
 
-            <!-- Phase 3: Dashboard Results -->
             <div id="results-dashboard" class="hidden">
                 <h2>Your Hormone Balance Dashboard</h2>
                 <div id="score-display"></div>
-                
                 <div id="coach-notes-display"></div>
                 <div id="girl-talk-display"></div>
                 <div id="jokes-display"></div>
-                <div id="tips-display" style="margin-top: 1.5rem;"></div>
-
+                <div class="calendar-container">
+                    <h2>Monthly Wellness Calendar</h2>
+                    <div id="tracker-calendar"></div>
+                </div>
                 <button class="btn btn-primary" onclick="resetApp()" style="margin-top: 2rem;">Log Tomorrow's Activities</button>
             </div>
 
-            <!-- Screening Rejected Error Screen -->
             <div id="screening-error" class="hidden">
                 <h2>Screening Result</h2>
                 <div class="error-banner" id="error-message"></div>
-                <button class="btn btn-primary" onclick="resetApp()" style="margin-top: 2rem;">Start Over</button>
+                <button class="btn btn-primary" onclick="handleLogout()" style="margin-top: 2rem;">Log Out & Sign in Correctly</button>
             </div>
         </section>
 
-        <!-- Section 2: Health Coach Portal -->
         <section id="section-portal" class="card hidden">
             <h2>Health Coach Portal</h2>
-            <p style="color: var(--text-muted); margin-bottom: 2rem;">
-                Review pending sessions with low scores and input custom advice to resume the patient's motivator loop.
-            </p>
             <div id="no-pending" style="padding: 2rem; text-align: center; color: var(--text-muted);">
-                No sessions currently pending review. Good job, Coach!
+                No sessions currently pending review.
             </div>
             <div id="pending-table-container" class="hidden">
                 <table>
@@ -657,14 +792,95 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     </main>
 
     <script>
-        let userData = {};
+        let loggedInUser = null;
         let activeSessionId = null;
         let pollInterval = null;
+
+        window.addEventListener('load', () => {
+            const saved = localStorage.getItem('perimeter_user');
+            if (saved) {
+                loggedInUser = JSON.parse(saved);
+                loadMainApp();
+            }
+        });
+
+        function switchAuthTab(form) {
+            document.querySelectorAll('.auth-toggle a').forEach(a => a.classList.remove('active'));
+            if (form === 'login') {
+                document.getElementById('toggle-login').classList.add('active');
+                document.getElementById('login-form').classList.remove('hidden');
+                document.getElementById('register-form').classList.add('hidden');
+            } else {
+                document.getElementById('toggle-register').classList.add('active');
+                document.getElementById('login-form').classList.add('hidden');
+                document.getElementById('register-form').classList.remove('hidden');
+            }
+        }
+
+        function handleLogin() {
+            const username = document.getElementById('login-username').value.trim();
+            const password = document.getElementById('login-password').value.trim();
+            fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    loggedInUser = data.user;
+                    localStorage.setItem('perimeter_user', JSON.stringify(loggedInUser));
+                    loadMainApp();
+                } else {
+                    document.getElementById('login-error-banner').innerText = data.error;
+                    document.getElementById('login-error-banner').classList.remove('hidden');
+                }
+            });
+        }
+
+        function handleRegister() {
+            const username = document.getElementById('reg-username').value.trim();
+            const password = document.getElementById('reg-password').value.trim();
+            const name = document.getElementById('reg-name').value.trim();
+            const age = parseInt(document.getElementById('reg-age').value);
+            const gender = document.getElementById('reg-gender').value;
+            const peri = document.getElementById('reg-perimenopause_status').value;
+            
+            fetch('/api/auth/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, name, age, gender, perimenopause_status: peri })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    loggedInUser = { id: data.user_id, username, name, age, gender, perimenopause_status: peri };
+                    localStorage.setItem('perimeter_user', JSON.stringify(loggedInUser));
+                    loadMainApp();
+                } else {
+                    document.getElementById('register-error-banner').innerText = data.error;
+                    document.getElementById('register-error-banner').classList.remove('hidden');
+                }
+            });
+        }
+
+        function handleLogout() {
+            loggedInUser = null;
+            localStorage.removeItem('perimeter_user');
+            location.reload();
+        }
+
+        function loadMainApp() {
+            document.getElementById('user-display-name').innerText = loggedInUser.name;
+            document.getElementById('user-header-badge').classList.remove('hidden');
+            document.getElementById('section-auth').classList.add('hidden');
+            document.getElementById('section-app').classList.remove('hidden');
+            resetApp();
+        }
 
         function switchTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('tab-' + tab).classList.add('active');
-
             if (tab === 'app') {
                 document.getElementById('section-app').classList.remove('hidden');
                 document.getElementById('section-portal').classList.add('hidden');
@@ -675,162 +891,52 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
-        function proceedToQuiz() {
-            const name = document.getElementById('name').value.trim();
-            const age = parseInt(document.getElementById('age').value);
-            const gender = document.getElementById('gender').value;
-            const peri = document.getElementById('perimenopause_status').value;
-            
-            const errBanner = document.getElementById('onboarding-error-banner');
-            errBanner.classList.add('hidden');
-
-            if (!name) {
-                alert('Please enter your name.');
-                return;
-            }
-            if (isNaN(age) || age < 0) {
-                alert('Please enter a valid age.');
-                return;
-            }
-
-            // Client-side eligibility checks
-            if (age === 0) {
-                errBanner.innerText = 'Age cannot be zero or negative.';
-                errBanner.classList.remove('hidden');
-                return;
-            }
-            if (gender === 'male') {
-                errBanner.innerText = 'PeriMeter AI is designed for individuals of female biology.';
-                errBanner.classList.remove('hidden');
-                return;
-            }
-            if (age < 35) {
-                errBanner.innerText = 'PeriMeter AI is optimized for ages 35+.';
-                errBanner.classList.remove('hidden');
-                return;
-            }
-            if (peri !== 'yes') {
-                errBanner.innerText = 'PeriMeter AI is designed for those experiencing perimenopause.';
-                errBanner.classList.remove('hidden');
-                return;
-            }
-
-            userData = { name, age, gender, perimenopause_status: peri, answers: {} };
-
-            // Fetch questions
+        function loadQuizQuestions() {
             fetch('/api/hormones')
                 .then(res => res.json())
                 .then(data => {
                     const container = document.getElementById('questions-container');
                     container.innerHTML = '';
-                    
                     for (const [hormone, details] of Object.entries(data)) {
                         const hSec = document.createElement('div');
                         hSec.className = 'hormone-section';
-                        
-                        const title = document.createElement('div');
-                        title.className = 'hormone-title';
-                        title.innerText = hormone;
-                        hSec.appendChild(title);
-                        
-                        const quest = document.createElement('p');
-                        quest.innerText = details.question;
-                        hSec.appendChild(quest);
-                        
+                        hSec.innerHTML = `<div class="hormone-title">${hormone}</div><p>${details.question}</p>`;
                         const optionsDiv = document.createElement('div');
-                        optionsDiv.className = 'radio-options';
-                        
-                        details.options.forEach((optText, index) => {
+                        optionsDiv.className = 'checkbox-options';
+                        details.options.forEach(optText => {
                             const label = document.createElement('label');
-                            label.className = 'radio-label';
-                            
-                            const radio = document.createElement('input');
-                            radio.type = 'radio';
-                            radio.name = hormone;
-                            radio.value = optText;
-                            if (index === 0) radio.checked = true; // Default select first
-                            
-                            label.appendChild(radio);
-                            label.appendChild(document.createTextNode(optText));
-                            
-                            radio.addEventListener('change', function() {
-                                document.querySelectorAll(`input[name="${hormone}"]`).forEach(r => {
-                                    r.parentElement.classList.remove('selected');
-                                });
-                                if (this.checked) {
-                                    label.classList.add('selected');
-                                }
+                            label.className = 'checkbox-label';
+                            label.innerHTML = `<input type="checkbox" name="${hormone}" value="${optText}"> ${optText}`;
+                            label.querySelector('input').addEventListener('change', function() {
+                                this.parentElement.classList.toggle('selected', this.checked);
                             });
-                            
                             optionsDiv.appendChild(label);
                         });
-                        
                         hSec.appendChild(optionsDiv);
                         container.appendChild(hSec);
                     }
-
-                    document.getElementById('onboarding-form').classList.add('hidden');
                     document.getElementById('quiz-form').classList.remove('hidden');
                 });
         }
 
-        function backToOnboarding() {
-            document.getElementById('quiz-form').classList.add('hidden');
-            document.getElementById('onboarding-form').classList.remove('hidden');
-        }
-
         function submitQuiz() {
-            // Collect selected radio options
             const answers = {};
             document.querySelectorAll('.hormone-section').forEach(sec => {
                 const hormone = sec.querySelector('.hormone-title').innerText;
-                const checkedRadio = sec.querySelector('input[type="radio"]:checked');
-                if (checkedRadio) {
-                    answers[hormone] = checkedRadio.value;
-                }
+                const checked = [];
+                sec.querySelectorAll('input:checked').forEach(c => checked.push(c.value));
+                answers[hormone] = checked;
             });
-
-            userData.answers = answers;
-
-            document.getElementById('quiz-form').classList.add('hidden');
-            document.getElementById('loading').classList.remove('hidden');
-
             fetch('/api/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(userData)
+                body: JSON.stringify({ user_id: loggedInUser.id, answers })
             })
             .then(res => res.json())
             .then(resData => {
-                document.getElementById('loading').classList.add('hidden');
-                activeSessionId = resData.session_id;
-
-                if (resData.status === 'pending_coach_review') {
-                    document.getElementById('pending-review-notice').classList.remove('hidden');
-                    // Start polling for updates
-                    pollInterval = setInterval(checkSessionStatus, 3000);
-                } else if (resData.status === 'completed') {
-                    showDashboard(resData.data);
-                }
-            })
-            .catch(err => {
-                document.getElementById('loading').classList.add('hidden');
-                alert('An error occurred during submission.');
+                document.getElementById('quiz-form').classList.add('hidden');
+                if (resData.status === 'completed') showDashboard(resData.data);
             });
-        }
-
-        function checkSessionStatus() {
-            if (!activeSessionId) return;
-            
-            fetch('/api/status/' + activeSessionId)
-                .then(res => res.json())
-                .then(resData => {
-                    if (resData.status === 'completed') {
-                        clearInterval(pollInterval);
-                        document.getElementById('pending-review-notice').classList.add('hidden');
-                        showDashboard(resData.data);
-                    }
-                });
         }
 
         function showDashboard(report) {
@@ -866,7 +972,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             if (report.girl_talk) {
                 const box = document.createElement('div');
                 box.className = 'girl-talk-box';
-                box.innerHTML = `<div class="girl-talk-title">Daily Motivation & Girl Talk</div><p>${report.girl_talk.replace(/\\n/g, '<br>')}</p>`;
+                box.innerHTML = `<div class="girl-talk-title">Daily Motivation & Girl Talk</div><p>${report.girl_talk.replace(/\n/g, '<br>')}</p>`;
                 talkDiv.appendChild(box);
             }
 
@@ -886,28 +992,86 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 });
             }
 
+            fetch('/api/logs?user_id=' + loggedInUser.id)
+                .then(res => res.json())
+                .then(logs => renderCalendar(logs));
+                
             document.getElementById('results-dashboard').classList.remove('hidden');
         }
 
-        function resetApp() {
-            clearInterval(pollInterval);
-            activeSessionId = null;
-            userData = {};
-            document.getElementById('name').value = '';
-            document.getElementById('age').value = '';
-            document.getElementById('gender').value = 'female';
-            document.getElementById('perimenopause_status').value = 'yes';
-            
-            const errBanner = document.getElementById('onboarding-error-banner');
-            errBanner.innerText = '';
-            errBanner.classList.add('hidden');
+        function renderCalendar(logs) {
+            const calendarContainer = document.getElementById('tracker-calendar');
+            calendarContainer.innerHTML = '';
 
-            document.getElementById('results-dashboard').classList.add('hidden');
-            document.getElementById('screening-error').classList.add('hidden');
-            document.getElementById('onboarding-form').classList.remove('hidden');
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = today.getMonth();
+
+            const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+            
+            const calHeader = document.createElement('div');
+            calHeader.style.display = 'flex';
+            calHeader.style.justifyContent = 'space-between';
+            calHeader.style.alignItems = 'center';
+            calHeader.style.marginBottom = '1.5rem';
+            
+            const calTitle = document.createElement('h3');
+            calTitle.style.margin = '0';
+            calTitle.innerText = `${monthNames[month]} ${year}`;
+            calHeader.appendChild(calTitle);
+            calendarContainer.appendChild(calHeader);
+
+            const grid = document.createElement('div');
+            grid.className = 'calendar-grid';
+            
+            const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+            weekdays.forEach(day => {
+                const dayHeader = document.createElement('div');
+                dayHeader.className = 'calendar-day-header';
+                dayHeader.innerText = day;
+                grid.appendChild(dayHeader);
+            });
+
+            const firstDay = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+            for (let i = 0; i < firstDay; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'calendar-cell blank';
+                grid.appendChild(cell);
+            }
+
+            for (let d = 1; d <= daysInMonth; d++) {
+                const cell = document.createElement('div');
+                cell.className = 'calendar-cell';
+                
+                const dateNum = document.createElement('span');
+                dateNum.className = 'date-num';
+                dateNum.innerText = d;
+                cell.appendChild(dateNum);
+
+                const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                const log = logs.find(l => l.date === dateStr);
+                if (log) {
+                    const scoreBadge = document.createElement('div');
+                    scoreBadge.className = log.score >= 50 ? 'score-indicator high' : 'score-indicator low';
+                    scoreBadge.innerText = `${log.score}`;
+                    cell.appendChild(scoreBadge);
+                    cell.style.cursor = 'pointer';
+                    cell.title = `Score: ${log.score}\nCoach Note: ${log.coach_note || 'None'}`;
+                }
+
+                grid.appendChild(cell);
+            }
+
+            calendarContainer.appendChild(grid);
         }
 
-        // Coach Portal functions
+        function resetApp() {
+            document.getElementById('results-dashboard').classList.add('hidden');
+            loadQuizQuestions();
+        }
+
         function loadPendingReviews() {
             fetch('/api/pending')
                 .then(res => res.json())
@@ -945,7 +1109,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                         list.style.margin = '0';
                         for (const [hormone, ans] of Object.entries(review.answers)) {
                             const li = document.createElement('li');
-                            li.innerHTML = `<strong>${hormone}</strong>: ${ans}`;
+                            li.innerHTML = `<strong>${hormone}</strong>: ${ans.join(', ')}`;
                             list.appendChild(li);
                         }
                         tdHormones.appendChild(list);
