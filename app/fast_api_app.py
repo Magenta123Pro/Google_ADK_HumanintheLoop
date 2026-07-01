@@ -1,6 +1,7 @@
 import os
+import re
 from datetime import datetime
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -21,7 +22,10 @@ from app.database import (
     authenticate_user,
     save_daily_log,
     save_coach_note,
-    get_user_logs
+    get_user_logs,
+    verify_coach_credentials,
+    get_user_email,
+    get_user_by_email
 )
 
 app = FastAPI(title="Peri-Meter AI - Hormonal Balance Motivator")
@@ -41,6 +45,7 @@ class SubmitQuizPayload(BaseModel):
     gender: str
     perimenopause_status: str
     answers: dict[str, list[str]]
+    date: str = None
 
 class CoachReviewPayload(BaseModel):
     coach_note: str
@@ -48,6 +53,7 @@ class CoachReviewPayload(BaseModel):
 class RegisterPayload(BaseModel):
     username: str
     password: str
+    email: str
     name: str
     age: int
     gender: str
@@ -62,11 +68,25 @@ async def get_dashboard():
     # Renders the HTML template containing the UI and Coach Portal
     return HTMLResponse(content=INDEX_HTML_TEMPLATE)
 
+class ForgotPasswordPayload(BaseModel):
+    email: str
+
 @app.post("/api/auth/register")
 async def handle_register(payload: RegisterPayload):
+    # Validation rules
+    # Username: Max 8 characters
+    if len(payload.username) > 8:
+        return JSONResponse(status_code=400, content={"error": "Username must be at most 8 characters long."})
+    
+    # Password: 8 characters, combination of alphabets, numbers, and special characters !, @, # only
+    password_pattern = r"^(?=.*[a-zA-Z])(?=.*[0-9])(?=.*[!@#])[a-zA-Z0-9!@#]{8}$"
+    if not re.match(password_pattern, payload.password):
+        return JSONResponse(status_code=400, content={"error": "Password must be exactly 8 characters long, containing a combination of alphabets, numbers, and only !, @, # as special characters."})
+
     res = register_user(
         username=payload.username,
         password=payload.password,
+        email=payload.email,
         name=payload.name,
         age=payload.age,
         gender=payload.gender,
@@ -82,6 +102,38 @@ async def handle_login(payload: LoginPayload):
     if res["success"]:
         return JSONResponse(content={"success": True, "user": res["user"]})
     return JSONResponse(status_code=400, content={"error": res["error"]})
+
+@app.post("/api/auth/forgot-password")
+async def handle_forgot_password(payload: ForgotPasswordPayload):
+    user = get_user_by_email(payload.email)
+    if not user:
+        return JSONResponse(status_code=400, content={"error": "Email not found."})
+    
+    # Simulate sending email
+    email_body = f"""Hi {user['username']},
+
+Here are your Peri-Meter AI login credentials:
+Username: {user['username']}
+Password: {user['password']}
+
+Please log in using these details.
+
+Be well,
+The Peri-Meter AI Team"""
+    
+    # Save/log the email
+    log_file_path = os.path.join(os.path.dirname(__file__), "email_logs.txt")
+    with open(log_file_path, "a", encoding="utf-8") as f:
+        f.write("========================================\n")
+        f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+        f.write(f"To: {user['email']}\n")
+        f.write("Subject: Your Peri-Meter AI Login Credentials\n")
+        f.write("----------------------------------------\n")
+        f.write(email_body + "\n")
+        f.write("========================================\n\n")
+        
+    print(f"EMAIL SENT TO {user['email']} containing credentials.")
+    return JSONResponse(content={"success": True})
 
 @app.get("/api/logs")
 async def handle_get_logs(user_id: int):
@@ -133,6 +185,9 @@ async def submit_quiz(payload: SubmitQuizPayload):
                     interrupt_id = ids[0]
                     break
         
+        # Extract date from payload, default to today
+        date_str = payload.date if payload.date else datetime.now().strftime("%Y-%m-%d")
+
         if interrupted and interrupt_id:
             # Workflow is suspended waiting for coach input
             pending_reviews[session_id] = {
@@ -142,7 +197,8 @@ async def submit_quiz(payload: SubmitQuizPayload):
                 "age": payload.age,
                 "gender": payload.gender,
                 "interrupt_id": interrupt_id,
-                "answers": payload.answers
+                "answers": payload.answers,
+                "date": date_str
             }
             active_sessions[session_id] = {"status": "pending_coach_review"}
             return JSONResponse(content={
@@ -153,12 +209,13 @@ async def submit_quiz(payload: SubmitQuizPayload):
             
         # If not interrupted, it completed (either ineligible or score >= 50)
         final_report = None
-        for event in events:
-            if event.output and isinstance(event.output, dict):
+        for event in reversed(events):
+            if event.output and isinstance(event.output, dict) and "score" in event.output:
                 final_report = event.output
                 break
                 
         if final_report:
+            final_report["date"] = date_str
             active_sessions[session_id] = {
                 "status": "completed",
                 "data": final_report
@@ -166,7 +223,6 @@ async def submit_quiz(payload: SubmitQuizPayload):
             
             # Save daily log to database
             if final_report.get("eligible", False):
-                date_str = datetime.now().strftime("%Y-%m-%d")
                 save_daily_log(
                     user_id=user_id,
                     date=date_str,
@@ -186,12 +242,58 @@ async def submit_quiz(payload: SubmitQuizPayload):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.get("/api/status/{session_id}")
+async def get_session_status(session_id: str):
+    if session_id in active_sessions:
+        return JSONResponse(content=active_sessions[session_id])
+    return JSONResponse(status_code=404, content={"error": "Session not found"})
+
+def send_email_alert(to_email: str, user_name: str, coach_note: str):
+    subject = "Your Peri-Meter AI Health Coach Review is Ready!"
+    body = (
+        f"Hi {user_name},\n\n"
+        f"Your health coach has reviewed your daily wellness activities and left the following encouragement:\n\n"
+        f"\"{coach_note}\"\n\n"
+        f"Please log in to the Peri-Meter AI portal to view your score, daily wellness suggestions, and calendar update.\n\n"
+        f"Be well,\n"
+        f"The Peri-Meter AI Team"
+    )
+    log_entry = (
+        f"========================================\n"
+        f"Timestamp: {datetime.now().isoformat()}\n"
+        f"To: {to_email}\n"
+        f"Subject: {subject}\n"
+        f"----------------------------------------\n"
+        f"{body}\n"
+        f"========================================\n\n"
+    )
+    # Print to console
+    print(f"EMAIL SENT TO {to_email}:\n{log_entry}")
+    
+    # Save to file
+    log_path = os.path.join(os.path.dirname(__file__), "email_logs.txt")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(log_entry)
+
 @app.get("/api/pending")
-async def get_pending_reviews():
+async def get_pending_reviews(
+    x_coach_username: str = Header(None),
+    x_coach_password: str = Header(None)
+):
+    if not x_coach_username or not x_coach_password or not verify_coach_credentials(x_coach_username, x_coach_password):
+        return JSONResponse(status_code=403, content={"error": "Forbidden: Health coach access required."})
     return JSONResponse(content=list(pending_reviews.values()))
 
 @app.post("/api/coach-review/{session_id}")
-async def submit_coach_review(session_id: str, payload: CoachReviewPayload):
+async def submit_coach_review(
+    session_id: str,
+    payload: CoachReviewPayload,
+    x_coach_username: str = Header(None),
+    x_coach_password: str = Header(None)
+):
+    if not x_coach_username or not x_coach_password or not verify_coach_credentials(x_coach_username, x_coach_password):
+        return JSONResponse(status_code=403, content={"error": "Forbidden: Health coach access required."})
+        
     if session_id not in pending_reviews:
         return JSONResponse(status_code=404, content={"error": "Session review not found"})
         
@@ -214,13 +316,16 @@ async def submit_coach_review(session_id: str, payload: CoachReviewPayload):
             )
         )
         
+        # Extract date from the review session info (supports yesterday logging)
+        date_str = review_info.get("date", datetime.now().strftime("%Y-%m-%d"))
+
         # Clean up from pending list
         pending_reviews.pop(session_id)
         
-        # Extract finalized report
+        # Extract finalized report by searching backwards and verifying 'score' is present
         final_report = None
-        for event in events:
-            if event.output and isinstance(event.output, dict):
+        for event in reversed(events):
+            if event.output and isinstance(event.output, dict) and "score" in event.output:
                 final_report = event.output
                 break
                 
@@ -231,7 +336,6 @@ async def submit_coach_review(session_id: str, payload: CoachReviewPayload):
             }
             
             # Save daily log and coach note to database
-            date_str = datetime.now().strftime("%Y-%m-%d")
             save_daily_log(
                 user_id=user_id,
                 date=date_str,
@@ -241,6 +345,11 @@ async def submit_coach_review(session_id: str, payload: CoachReviewPayload):
                 girl_talk=final_report["girl_talk"]
             )
             save_coach_note(user_id, date_str, payload.coach_note)
+            
+            # Send email alert to user
+            user_email = get_user_email(user_id)
+            if user_email:
+                send_email_alert(user_email, review_info["name"], payload.coach_note)
             
             return JSONResponse(content={
                 "status": "completed",
@@ -662,7 +771,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     </header>
 
     <main>
-        <div class="tab-buttons">
+        <div class="tab-buttons" style="display: none;">
             <button class="tab-btn active" id="tab-app" onclick="switchTab('app')">Motivator App</button>
             <button class="tab-btn" id="tab-portal" onclick="switchTab('portal')">Health Coach Portal</button>
         </div>
@@ -685,6 +794,26 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 </div>
                 <div id="login-error-banner" class="error-banner hidden"></div>
                 <button class="btn btn-primary" onclick="handleLogin()" style="margin-top: 1rem;">Login</button>
+                <div style="margin-top: 1.5rem; text-align: right;">
+                    <a href="#" onclick="showForgotPassword(event)" style="color: var(--color-primary); font-size: 0.9rem; text-decoration: underline;">Forgot Username/Password?</a>
+                </div>
+            </div>
+
+            <div id="forgot-form" class="auth-container hidden">
+                <h2>Retrieve Username/Password</h2>
+                <p style="color: var(--text-muted); margin-bottom: 1.5rem;">
+                    Enter the email address registered with your account. We will send you an email with your login details.
+                </p>
+                <div class="form-group">
+                    <label for="forgot-email">Email Address</label>
+                    <input type="email" id="forgot-email" placeholder="Enter email address">
+                </div>
+                <div id="forgot-message-banner" class="error-banner hidden" style="background-color: #f0fdf4; color: #166534; border-color: #bbf7d0;"></div>
+                <div id="forgot-error-banner" class="error-banner hidden"></div>
+                <div style="display: flex; gap: 1rem; margin-top: 1rem;">
+                    <button class="btn btn-primary" onclick="handleForgotPassword()">Send Credentials</button>
+                    <button class="btn btn-secondary" onclick="switchAuthTab('login')">Cancel</button>
+                </div>
             </div>
             
             <div id="register-form" class="auth-container hidden">
@@ -696,6 +825,10 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="form-group">
                     <label for="reg-password">Password</label>
                     <input type="password" id="reg-password" placeholder="Choose a password">
+                </div>
+                <div class="form-group">
+                    <label for="reg-email">Email Address</label>
+                    <input type="email" id="reg-email" placeholder="Enter email address">
                 </div>
                 <div class="form-group">
                     <label for="reg-name">What is your name?</label>
@@ -710,7 +843,6 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                     <select id="reg-gender">
                         <option value="female">Female</option>
                         <option value="male">Male</option>
-                        <option value="other">Other</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -728,8 +860,15 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         <section id="section-app" class="card hidden">
             <div id="quiz-form">
                 <h2 id="quiz-heading">Daily Hormone Activity Log</h2>
+                <div class="form-group" style="flex-direction: row; align-items: center; gap: 1rem; margin-bottom: 1.5rem;">
+                    <label for="quiz-log-date" style="font-weight: 600;">Logging activities for:</label>
+                    <select id="quiz-log-date" onchange="handleLogDateChange()" style="padding: 0.4rem 1rem; border-radius: 0.5rem; border: 2px solid #e9d5ff;">
+                        <option value="today">Today</option>
+                        <option value="yesterday">Yesterday</option>
+                    </select>
+                </div>
                 <p style="color: var(--text-muted); margin-bottom: 2rem;">
-                    Hormone levels shift based on our daily practices. Let's record which target activities you engaged in today.
+                    Hormone levels shift based on our daily practices. Let's record which target activities you engaged in.
                 </p>
                 <div id="questions-container"></div>
                 <div style="display: flex; gap: 1rem; margin-top: 2rem;">
@@ -745,8 +884,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             <div id="pending-review-notice" class="hidden">
                 <div class="score-badge score-fail">Reviewing with Coach</div>
                 <h2>Almost there!</h2>
-                <p>Because your score is under 50, your results are pending Coach review.</p>
-                <div class="spinner"></div>
+                <p>Because your score is under 50, your results are pending Coach review. Please log back in once you receive an email alert from your health coach.</p>
             </div>
 
             <div id="results-dashboard" class="hidden">
@@ -755,7 +893,8 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 <div id="coach-notes-display"></div>
                 <div id="girl-talk-display"></div>
                 <div id="jokes-display"></div>
-                <button class="btn btn-primary" onclick="resetApp()" style="margin-top: 2rem;">Log Tomorrow's Activities</button>
+                <button id="btn-log-yesterday" class="btn btn-secondary" onclick="logYesterday()" style="margin-top: 2rem; margin-right: 1rem;">Log Yesterday's Activities</button>
+                <button class="btn btn-primary" onclick="resetApp()" style="margin-top: 2rem;">Log Today's Activities</button>
             </div>
 
             <div id="screening-error" class="hidden">
@@ -770,7 +909,16 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
         </section>
 
-        <section id="section-portal" class="card hidden">
+        <section id="section-portal" class="card hidden"></section>
+    </main>
+
+    <script>
+        let loggedInUser = null;
+        let activeSessionId = null;
+        let pollInterval = null;
+        let calendarMonthOffset = 0;
+
+        const COACH_PORTAL_HTML = `
             <h2>Health Coach Portal</h2>
             <div id="no-pending" style="padding: 2rem; text-align: center; color: var(--text-muted);">
                 No sessions currently pending review.
@@ -789,13 +937,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                     <tbody id="pending-list"></tbody>
                 </table>
             </div>
-        </section>
-    </main>
-
-    <script>
-        let loggedInUser = null;
-        let activeSessionId = null;
-        let pollInterval = null;
+        `;
 
         window.addEventListener('load', () => {
             const saved = localStorage.getItem('perimeter_user');
@@ -807,6 +949,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
         function switchAuthTab(form) {
             document.querySelectorAll('.auth-toggle a').forEach(a => a.classList.remove('active'));
+            document.getElementById('forgot-form').classList.add('hidden');
             if (form === 'login') {
                 document.getElementById('toggle-login').classList.add('active');
                 document.getElementById('login-form').classList.remove('hidden');
@@ -816,6 +959,50 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('login-form').classList.add('hidden');
                 document.getElementById('register-form').classList.remove('hidden');
             }
+        }
+
+        function showForgotPassword(event) {
+            if (event) event.preventDefault();
+            document.querySelectorAll('.auth-toggle a').forEach(a => a.classList.remove('active'));
+            document.getElementById('login-form').classList.add('hidden');
+            document.getElementById('register-form').classList.add('hidden');
+            document.getElementById('forgot-form').classList.remove('hidden');
+            document.getElementById('forgot-email').value = '';
+            document.getElementById('forgot-message-banner').classList.add('hidden');
+            document.getElementById('forgot-error-banner').classList.add('hidden');
+        }
+
+        function handleForgotPassword() {
+            const email = document.getElementById('forgot-email').value.trim();
+            if (!email) {
+                document.getElementById('forgot-error-banner').innerText = "Please enter an email address.";
+                document.getElementById('forgot-error-banner').classList.remove('hidden');
+                document.getElementById('forgot-message-banner').classList.add('hidden');
+                return;
+            }
+            
+            fetch('/api/auth/forgot-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('forgot-message-banner').innerText = "An email has been sent with your credentials.";
+                    document.getElementById('forgot-message-banner').classList.remove('hidden');
+                    document.getElementById('forgot-error-banner').classList.add('hidden');
+                } else {
+                    document.getElementById('forgot-error-banner').innerText = data.error || "Email not found.";
+                    document.getElementById('forgot-error-banner').classList.remove('hidden');
+                    document.getElementById('forgot-message-banner').classList.add('hidden');
+                }
+            })
+            .catch(err => {
+                document.getElementById('forgot-error-banner').innerText = "An error occurred. Please try again.";
+                document.getElementById('forgot-error-banner').classList.remove('hidden');
+                document.getElementById('forgot-message-banner').classList.add('hidden');
+            });
         }
 
         function handleLogin() {
@@ -830,6 +1017,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             .then(data => {
                 if (data.success) {
                     loggedInUser = data.user;
+                    loggedInUser.password = password;
                     localStorage.setItem('perimeter_user', JSON.stringify(loggedInUser));
                     loadMainApp();
                 } else {
@@ -842,20 +1030,55 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         function handleRegister() {
             const username = document.getElementById('reg-username').value.trim();
             const password = document.getElementById('reg-password').value.trim();
+            const email = document.getElementById('reg-email').value.trim();
             const name = document.getElementById('reg-name').value.trim();
             const age = parseInt(document.getElementById('reg-age').value);
             const gender = document.getElementById('reg-gender').value;
             const peri = document.getElementById('reg-perimenopause_status').value;
             
+            if (!username) {
+                document.getElementById('register-error-banner').innerText = "Username cannot be empty.";
+                document.getElementById('register-error-banner').classList.remove('hidden');
+                return;
+            }
+            if (username.length > 8) {
+                document.getElementById('register-error-banner').innerText = "Username must be at most 8 characters long.";
+                document.getElementById('register-error-banner').classList.remove('hidden');
+                return;
+            }
+            
+            const passwordRegex = /^(?=.*[a-zA-Z])(?=.*[0-9])(?=.*[!@#])[a-zA-Z0-9!@#]{8}$/;
+            if (!passwordRegex.test(password)) {
+                document.getElementById('register-error-banner').innerText = "Password must be exactly 8 characters long, containing a combination of alphabets, numbers, and only !, @, # as special characters.";
+                document.getElementById('register-error-banner').classList.remove('hidden');
+                return;
+            }
+            if (!email || !email.includes('@') || !email.includes('.')) {
+                document.getElementById('register-error-banner').innerText = "Please enter a valid email address.";
+                document.getElementById('register-error-banner').classList.remove('hidden');
+                return;
+            }
+            if (!name) {
+                document.getElementById('register-error-banner').innerText = "Name cannot be empty.";
+                document.getElementById('register-error-banner').classList.remove('hidden');
+                return;
+            }
+            if (isNaN(age) || age <= 0) {
+                document.getElementById('register-error-banner').innerText = "Age must be a positive number.";
+                document.getElementById('register-error-banner').classList.remove('hidden');
+                return;
+            }
+
             fetch('/api/auth/register', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, name, age, gender, perimenopause_status: peri })
+                body: JSON.stringify({ username, password, email, name, age, gender, perimenopause_status: peri })
             })
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
-                    loggedInUser = { id: data.user_id, username, name, age, gender, perimenopause_status: peri };
+                    loggedInUser = { id: data.user_id, username, email, name, age, gender, perimenopause_status: peri, is_coach: false };
+                    loggedInUser.password = password;
                     localStorage.setItem('perimeter_user', JSON.stringify(loggedInUser));
                     loadMainApp();
                 } else {
@@ -876,35 +1099,94 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('user-display-name').innerText = loggedInUser.name;
             document.getElementById('user-header-badge').classList.remove('hidden');
             document.getElementById('section-auth').classList.add('hidden');
-            document.getElementById('section-app').classList.remove('hidden');
             
-            // Check if user has already logged today
-            fetch('/api/logs?user_id=' + loggedInUser.id)
-                .then(res => res.json())
-                .then(logs => {
-                    renderCalendar(logs);
-                    document.getElementById('calendar-wrapper').classList.remove('hidden');
-                    const todayStr = new Date().toISOString().split('T')[0];
-                    const todaysLog = logs.find(l => l.date === todayStr);
-                    if (todaysLog) {
-                        showDashboard({
-                            eligible: true,
-                            score: todaysLog.score,
-                            coach_note: todaysLog.coach_note,
-                            girl_talk: todaysLog.girl_talk,
-                            jokes: JSON.parse(todaysLog.jokes)
-                        });
-                    } else {
+            const tabButtons = document.querySelector('.tab-buttons');
+            const tabPortal = document.getElementById('tab-portal');
+            const tabApp = document.getElementById('tab-app');
+
+            if (loggedInUser.is_coach) {
+                tabButtons.style.display = 'flex';
+                tabPortal.style.display = 'block';
+                tabApp.style.display = 'none';
+                
+                // Securely inject the coach portal HTML details only for authenticated coaches
+                document.getElementById('section-portal').innerHTML = COACH_PORTAL_HTML;
+                
+                switchTab('portal');
+            } else {
+                // Early eligibility check
+                const age = parseInt(loggedInUser.age);
+                const gender = loggedInUser.gender.toLowerCase();
+                const peri = loggedInUser.perimenopause_status.toLowerCase();
+                
+                let eligibilityError = null;
+                if (isNaN(age) || age <= 0) {
+                    eligibilityError = "Age cannot be zero or negative.";
+                } else if (gender === "male") {
+                    eligibilityError = "PeriMeter AI is designed for individuals of female biology.";
+                } else if (age < 35 || age > 80) {
+                    eligibilityError = "PeriMeter AI is optimized for ages 35+ (up to 80).";
+                } else if (peri !== "yes") {
+                    eligibilityError = "PeriMeter AI is designed for those experiencing perimenopause.";
+                }
+                
+                if (eligibilityError) {
+                    // Show screening error immediately and hide everything else
+                    tabButtons.style.display = 'none';
+                    tabPortal.style.display = 'none';
+                    tabApp.style.display = 'block';
+                    document.getElementById('section-portal').innerHTML = '';
+
+                    document.getElementById('error-message').innerText = eligibilityError;
+                    document.getElementById('screening-error').classList.remove('hidden');
+                    document.getElementById('section-app').classList.remove('hidden');
+                    document.getElementById('quiz-form').classList.add('hidden');
+                    document.getElementById('results-dashboard').classList.add('hidden');
+                    document.getElementById('calendar-wrapper').classList.add('hidden');
+                    return;
+                }
+
+                // Completely hide tab buttons and empty the coach portal content for other users
+                tabButtons.style.display = 'none';
+                tabPortal.style.display = 'none';
+                tabApp.style.display = 'block';
+                document.getElementById('section-portal').innerHTML = '';
+                
+                switchTab('app');
+                
+                // Check if user has already logged today
+                fetch('/api/logs?user_id=' + loggedInUser.id)
+                    .then(res => res.json())
+                    .then(logs => {
+                        renderCalendar(logs);
+                        document.getElementById('calendar-wrapper').classList.remove('hidden');
+                        const todayStr = new Date().toISOString().split('T')[0];
+                        const todaysLog = logs.find(l => l.date === todayStr);
+                        if (todaysLog) {
+                            document.getElementById('quiz-form').classList.add('hidden');
+                            showDashboard({
+                                eligible: true,
+                                score: todaysLog.score,
+                                coach_note: todaysLog.coach_note,
+                                girl_talk: todaysLog.girl_talk,
+                                jokes: (typeof todaysLog.jokes === 'string') ? JSON.parse(todaysLog.jokes) : todaysLog.jokes,
+                                date: todaysLog.date
+                            });
+                        } else {
+                            resetApp();
+                        }
+                    })
+                    .catch(err => {
+                        console.error("Error loading logs:", err);
                         resetApp();
-                    }
-                })
-                .catch(err => {
-                    console.error("Error loading logs:", err);
-                    resetApp();
-                });
+                    });
+            }
         }
 
         function switchTab(tab) {
+            if (tab === 'portal' && (!loggedInUser || !loggedInUser.is_coach)) {
+                return;
+            }
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.getElementById('tab-' + tab).classList.add('active');
             if (tab === 'app') {
@@ -915,6 +1197,62 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 document.getElementById('section-portal').classList.remove('hidden');
                 loadPendingReviews();
             }
+        }
+
+        function getTargetDateStr(mode) {
+            if (mode === 'yesterday') {
+                return new Date(Date.now() - 86400000).toISOString().split('T')[0];
+            }
+            return new Date().toISOString().split('T')[0];
+        }
+
+        function handleLogDateChange() {
+            const dateSelect = document.getElementById('quiz-log-date').value;
+            const targetDateStr = getTargetDateStr(dateSelect);
+            
+            // Check if there is already a log for this date
+            fetch('/api/logs?user_id=' + loggedInUser.id)
+                .then(res => res.json())
+                .then(logs => {
+                    const log = logs.find(l => l.date === targetDateStr);
+                    if (log) {
+                        document.getElementById('quiz-form').classList.add('hidden');
+                        showDashboard({
+                            eligible: true,
+                            score: log.score,
+                            coach_note: log.coach_note,
+                            girl_talk: log.girl_talk,
+                            jokes: (typeof log.jokes === 'string') ? JSON.parse(log.jokes) : log.jokes,
+                            date: log.date
+                        });
+                    } else {
+                        // Keep quiz form visible, but clear checkboxes
+                        document.getElementById('quiz-form').classList.remove('hidden');
+                        document.getElementById('results-dashboard').classList.add('hidden');
+                        document.querySelectorAll('.checkbox-label input[type="checkbox"]').forEach(c => {
+                            c.checked = false;
+                            c.parentElement.classList.remove('selected');
+                        });
+                    }
+                })
+                .catch(err => console.error("Error checking date logs:", err));
+        }
+
+        function logYesterday() {
+            document.getElementById('results-dashboard').classList.add('hidden');
+            document.getElementById('pending-review-notice').classList.add('hidden');
+            document.getElementById('screening-error').classList.add('hidden');
+            
+            loadQuizQuestions();
+            
+            // Wait for quiz to load, then set to yesterday
+            setTimeout(() => {
+                const select = document.getElementById('quiz-log-date');
+                if (select) {
+                    select.value = 'yesterday';
+                    handleLogDateChange();
+                }
+            }, 300);
         }
 
         function loadQuizQuestions() {
@@ -941,6 +1279,8 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                         hSec.appendChild(optionsDiv);
                         container.appendChild(hSec);
                     }
+                    const select = document.getElementById('quiz-log-date');
+                    if (select) select.value = 'today';
                     document.getElementById('quiz-form').classList.remove('hidden');
                 });
         }
@@ -969,6 +1309,9 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 sec.querySelectorAll('input:checked').forEach(c => checked.push(c.value));
                 answers[hormone] = checked;
             });
+            const logDateSelect = document.getElementById('quiz-log-date') ? document.getElementById('quiz-log-date').value : 'today';
+            const dateStr = getTargetDateStr(logDateSelect);
+            
             fetch('/api/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -978,7 +1321,8 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                     age: loggedInUser.age,
                     gender: loggedInUser.gender,
                     perimenopause_status: loggedInUser.perimenopause_status,
-                    answers
+                    answers,
+                    date: dateStr
                 })
             })
             .then(res => res.json())
@@ -988,7 +1332,6 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                     showDashboard(resData.data);
                 } else if (resData.status === 'pending_coach_review') {
                     document.getElementById('pending-review-notice').classList.remove('hidden');
-                    startPolling(resData.session_id);
                 }
             });
         }
@@ -1006,10 +1349,34 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             const scoreDisplay = document.getElementById('score-display');
             scoreDisplay.innerHTML = '';
             
+            // Format target date and timezone
+            let targetDate = new Date();
+            if (report.date) {
+                const parts = report.date.split('-');
+                targetDate = new Date(parts[0], parts[1] - 1, parts[2]);
+            }
+            const dateStr = new Intl.DateTimeFormat('en-US', {
+                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZoneName: 'short'
+            }).format(targetDate);
+            
+            const dateHeader = document.createElement('h3');
+            dateHeader.style.color = 'var(--text-muted)';
+            dateHeader.style.marginTop = '0';
+            dateHeader.innerText = dateStr;
+            scoreDisplay.appendChild(dateHeader);
+            
             const badge = document.createElement('div');
             badge.className = 'score-badge ' + (report.score >= 50 ? 'score-pass' : 'score-fail');
-            badge.innerText = `Score: ${report.score}/60`;
+            badge.innerText = `Score: ${report.score}`;
             scoreDisplay.appendChild(badge);
+            
+            const minScoreText = document.createElement('p');
+            minScoreText.style.color = 'var(--text-muted)';
+            minScoreText.style.fontSize = '0.9rem';
+            minScoreText.style.marginTop = '0.5rem';
+            minScoreText.style.marginBottom = '2rem';
+            minScoreText.innerText = 'The minimum target score for hormonal balance is 60.';
+            scoreDisplay.appendChild(minScoreText);
 
             // Coach notes
             const coachDiv = document.getElementById('coach-notes-display');
@@ -1067,8 +1434,9 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             calendarContainer.innerHTML = '';
 
             const today = new Date();
-            const year = today.getFullYear();
-            const month = today.getMonth();
+            const targetDate = new Date(today.getFullYear(), today.getMonth() + calendarMonthOffset, 1);
+            const year = targetDate.getFullYear();
+            const month = targetDate.getMonth();
 
             const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
             
@@ -1078,10 +1446,37 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             calHeader.style.alignItems = 'center';
             calHeader.style.marginBottom = '1.5rem';
             
+            const btnPrev = document.createElement('button');
+            btnPrev.className = 'btn btn-secondary';
+            btnPrev.style.padding = '0.2rem 0.5rem';
+            btnPrev.innerText = '<';
+            btnPrev.onclick = function() {
+                calendarMonthOffset--;
+                refreshCalendar();
+            };
+            
+            const btnNext = document.createElement('button');
+            btnNext.className = 'btn btn-secondary';
+            btnNext.style.padding = '0.2rem 0.5rem';
+            btnNext.innerText = '>';
+            btnNext.onclick = function() {
+                calendarMonthOffset++;
+                refreshCalendar();
+            };
+
             const calTitle = document.createElement('h3');
             calTitle.style.margin = '0';
             calTitle.innerText = `${monthNames[month]} ${year}`;
-            calHeader.appendChild(calTitle);
+            
+            const titleDiv = document.createElement('div');
+            titleDiv.style.display = 'flex';
+            titleDiv.style.alignItems = 'center';
+            titleDiv.style.gap = '1rem';
+            titleDiv.appendChild(btnPrev);
+            titleDiv.appendChild(calTitle);
+            titleDiv.appendChild(btnNext);
+            
+            calHeader.appendChild(titleDiv);
             calendarContainer.appendChild(calHeader);
 
             const grid = document.createElement('div');
@@ -1122,6 +1517,15 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                     cell.appendChild(scoreBadge);
                     cell.style.cursor = 'pointer';
                     cell.title = `Score: ${log.score}\nCoach Note: ${log.coach_note || 'None'}`;
+                    cell.onclick = function() {
+                        showDashboard({
+                            eligible: true,
+                            score: log.score,
+                            coach_note: log.coach_note,
+                            girl_talk: log.girl_talk,
+                            jokes: log.jokes
+                        });
+                    };
                 }
 
                 grid.appendChild(cell);
@@ -1136,11 +1540,33 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('pending-review-notice').classList.add('hidden');
             loadQuizQuestions();
             refreshCalendar();
+            // Wait for quiz to load, then ensure date is today and check log status
+            setTimeout(() => {
+                const select = document.getElementById('quiz-log-date');
+                if (select) {
+                    select.value = 'today';
+                    handleLogDateChange();
+                }
+            }, 300);
         }
 
         function loadPendingReviews() {
-            fetch('/api/pending')
-                .then(res => res.json())
+            const headers = { 'Content-Type': 'application/json' };
+            if (loggedInUser) {
+                headers['X-Coach-Username'] = loggedInUser.username;
+                headers['X-Coach-Password'] = loggedInUser.password;
+            }
+            fetch('/api/pending', {
+                headers: headers
+            })
+                .then(res => {
+                    if (res.status === 403) {
+                        alert("Unauthorized: Health coach access required.");
+                        handleLogout();
+                        throw new Error("Unauthorized");
+                    }
+                    return res.json();
+                })
                 .then(reviews => {
                     const tbody = document.getElementById('pending-list');
                     tbody.innerHTML = '';
@@ -1213,6 +1639,9 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
                         tbody.appendChild(tr);
                     });
+                })
+                .catch(err => {
+                    console.error("Error loading pending reviews:", err);
                 });
         }
 
@@ -1220,12 +1649,25 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             button.disabled = true;
             button.innerText = 'Submitting...';
 
+            const headers = { 'Content-Type': 'application/json' };
+            if (loggedInUser) {
+                headers['X-Coach-Username'] = loggedInUser.username;
+                headers['X-Coach-Password'] = loggedInUser.password;
+            }
+
             fetch('/api/coach-review/' + sessionId, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: headers,
                 body: JSON.stringify({ coach_note: note })
             })
-            .then(res => res.json())
+            .then(res => {
+                if (res.status === 403) {
+                    alert("Unauthorized: Health coach access required.");
+                    handleLogout();
+                    throw new Error("Unauthorized");
+                }
+                return res.json();
+            })
             .then(data => {
                 alert('Review submitted successfully!');
                 loadPendingReviews();

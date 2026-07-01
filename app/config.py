@@ -7,49 +7,49 @@ HORMONE_ACTIVITIES = {
     "Estrogen": {
         "question": "Which activity did you prioritize for Estrogen (Estradiol) support today?",
         "options": [
-            {"text": "Strength training or eating cruciferous vegetables", "correct": True},
-            {"text": "Deep breathing exercises for 10 minutes", "correct": False},
-            {"text": "Going to bed at a consistent time", "correct": False}
+            {"text": "Strength training", "correct": True},
+            {"text": "Eating cruciferous vegetables", "correct": True},
+            {"text": "Daily hydration", "correct": True}
         ]
     },
     "Progesterone": {
         "question": "How did you support Progesterone levels today?",
         "options": [
-            {"text": "Breathwork/meditation, zinc, or limiting alcohol", "correct": True},
-            {"text": "Eating fiber-rich meals first", "correct": False},
-            {"text": "Walking 15 minutes after dinner", "correct": False}
+            {"text": "Breathwork and meditation", "correct": True},
+            {"text": "Consuming zinc", "correct": True},
+            {"text": "Limiting alcohol intake", "correct": True}
         ]
     },
     "Insulin": {
         "question": "What did you do to manage Insulin sensitivity today?",
         "options": [
-            {"text": "Fiber-first eating, post-meal walk, or 12-hour rest", "correct": True},
-            {"text": "Engaging in morning sunlight exposure", "correct": False},
-            {"text": "Drinking green tea instead of coffee in the afternoon", "correct": False}
+            {"text": "Fiber-first eating", "correct": True},
+            {"text": "Walking post-meals", "correct": True},
+            {"text": "Time-restricted feeding", "correct": True}
         ]
     },
     "Cortisol": {
         "question": "How did you maintain a healthy Cortisol rhythm today?",
         "options": [
-            {"text": "Caffeine elimination after noon, nature immersion, or stretching", "correct": True},
-            {"text": "Eating organic leafy greens", "correct": False},
-            {"text": "Consuming magnesium glycinate before sleep", "correct": False}
+            {"text": "Caffeine elimination after noon", "correct": True},
+            {"text": "Nature immersion", "correct": True},
+            {"text": "Stretching or Restorative Yoga", "correct": True}
         ]
     },
     "LH_FSH": {
         "question": "What step did you take for LH and FSH pituitary surge stabilization?",
         "options": [
-            {"text": "Adequate calories, consistent sleep, or acupuncture", "correct": True},
-            {"text": "Prioritizing daily hydration with filtered water", "correct": False},
-            {"text": "Taking a warm bath to unwind", "correct": False}
+            {"text": "Adequate caloric intake", "correct": True},
+            {"text": "Consistent sleep schedule", "correct": True},
+            {"text": "Acupuncture", "correct": True}
         ]
     },
     "Melatonin": {
         "question": "How did you support natural Melatonin production today?",
         "options": [
-            {"text": "Morning sunlight exposure, blue-light block, or magnesium", "correct": True},
-            {"text": "Doing a moderate strength training session", "correct": False},
-            {"text": "Eating cruciferous vegetables with lunch", "correct": False}
+            {"text": "Morning sunlight", "correct": True},
+            {"text": "Blue-light blocking", "correct": True},
+            {"text": "Magnesium glycinate", "correct": True}
         ]
     }
 }

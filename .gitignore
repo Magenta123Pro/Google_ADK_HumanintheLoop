@@ -12,3 +12,6 @@ dist/
 build/
 *.egg-info/
 .semgrep/
+*.db
+email_logs.txt
+Create a special username and passw.txt

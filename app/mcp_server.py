@@ -8,12 +8,12 @@ server = Server("hormone-kb")
 
 # The database of correct activities for hormones
 HORMONE_DATA = {
-    "Estrogen": "Strength training or eating cruciferous vegetables",
-    "Progesterone": "Breathwork/meditation, zinc, or limiting alcohol",
-    "Insulin": "Fiber-first eating, post-meal walk, or 12-hour rest",
-    "Cortisol": "Caffeine elimination after noon, nature immersion, or stretching",
-    "LH_FSH": "Adequate calories, consistent sleep, or acupuncture",
-    "Melatonin": "Morning sunlight exposure, blue-light block, or magnesium"
+    "Estrogen": "Strength training, Eating cruciferous vegetables, or Daily hydration",
+    "Progesterone": "Breathwork and meditation, Consuming zinc, or Limiting alcohol intake",
+    "Insulin": "Fiber-first eating, Walking post-meals, or Time-restricted feeding",
+    "Cortisol": "Caffeine elimination after noon, Nature immersion, or Stretching or Restorative Yoga",
+    "LH_FSH": "Adequate caloric intake, Consistent sleep schedule, or Acupuncture",
+    "Melatonin": "Morning sunlight, Blue-light blocking, or Magnesium glycinate"
 }
 
 @server.list_tools()

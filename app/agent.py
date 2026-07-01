@@ -86,8 +86,8 @@ def check_eligibility(ctx: Context, node_input: OnboardingData) -> Event:
     elif gender == "male":
         ctx.state["eligibility_error"] = "PeriMeter AI is designed for individuals of female biology."
         return Event(output=node_input, route="ineligible")
-    elif age < 35:
-        ctx.state["eligibility_error"] = "PeriMeter AI is optimized for ages 35+."
+    elif age < 35 or age > 80:
+        ctx.state["eligibility_error"] = "PeriMeter AI is optimized for ages 35+ (up to 80)."
         return Event(output=node_input, route="ineligible")
     elif peri != "yes":
         ctx.state["eligibility_error"] = "PeriMeter AI is designed for those experiencing perimenopause."
@@ -131,7 +131,8 @@ async def calculate_score(ctx: Context, node_input: OnboardingData) -> Event:
     # Fetch guidelines from MCP server
     mcp_guidelines = await fetch_hormone_guidelines_from_mcp()
     
-    for hormone, selected_val in answers.items():
+    for hormone in HORMONE_ACTIVITIES:
+        selected_val = answers.get(hormone, [])
         if isinstance(selected_val, str):
             selected_list = [selected_val]
         elif isinstance(selected_val, list):
@@ -139,39 +140,29 @@ async def calculate_score(ctx: Context, node_input: OnboardingData) -> Event:
         else:
             selected_list = []
 
-        if hormone in HORMONE_ACTIVITIES:
-            hormone_correct_options = []
-            hormone_incorrect_options = []
+        hormone_correct_options = []
+        for activity_text in selected_list:
+            matched_option = None
+            for opt in HORMONE_ACTIVITIES[hormone]["options"]:
+                if opt["text"] == activity_text:
+                    matched_option = opt
+                    break
             
-            for activity_text in selected_list:
-                matched_option = None
-                for opt in HORMONE_ACTIVITIES[hormone]["options"]:
-                    if opt["text"] == activity_text:
-                        matched_option = opt
-                        break
-                
-                if matched_option:
-                    if matched_option["correct"]:
-                        hormone_correct_options.append(activity_text)
-                    else:
-                        hormone_incorrect_options.append(activity_text)
-            
-            # If user selects more than one option for the same hormone:
-            # - First correct option gets 10 points
-            # - Other correct options get 3 points each
-            # - Incorrect options get -5 points each
-            if hormone_correct_options:
-                score += 10
-                score += (len(hormone_correct_options) - 1) * 3
-                correct_hormones.append(hormone)
-            
-            if hormone_incorrect_options:
-                score += len(hormone_incorrect_options) * (-5)
-                if hormone not in correct_hormones:
-                    incorrect_hormones.append(hormone)
-                    
-            if not selected_list:
-                incorrect_hormones.append(hormone)
+            if matched_option and matched_option["correct"]:
+                hormone_correct_options.append(activity_text)
+        
+        # Scoring Rules:
+        # - If 1 option is checked for a hormone: +10 points
+        # - If more than 1 option is checked for a hormone: +10 points + 3 extra points for each selection under the same hormone
+        N = len(hormone_correct_options)
+        if N == 1:
+            score += 10
+            correct_hormones.append(hormone)
+        elif N > 1:
+            score += 10 + (3 * N)
+            correct_hormones.append(hormone)
+        else:
+            incorrect_hormones.append(hormone)
 
     ctx.state["score"] = score
     ctx.state["correct_hormones"] = correct_hormones
@@ -236,51 +227,66 @@ def finalize_report(ctx: Context, node_input: Any) -> Event:
     correct = ctx.state.get("correct_hormones", [])
     coach_note = ctx.state.get("coach_note", "")
 
-    # Construct LLM prompt based on score
+    # Construct LLM prompt to generate unique jokes and unique pep talk (girl talk) based on score
     if score >= 50:
         prompt = (
-            f"Write a single clean, lighthearted joke or pun about healthy hormones, balance, or self-care to make a perimenopausal woman named {name} smile.\n"
-            f"Format the output strictly as a JSON list of strings containing exactly 1 element, e.g. [\"Why did the estrogen go to the gym? To lift her spirits!\"]"
+            f"Generate a unique, clean, lighthearted self-care joke or pun to make a perimenopausal woman named {name} smile. "
+            f"Also generate a unique daily wellness pep talk (girl talk) for her. She scored a high score of {score}/60 today.\n"
+            f"Format the output strictly as a JSON object with keys 'jokes' (a list containing exactly 1 joke string) and "
+            f"'pep_talk' (a personalized, warm, encouraging message string)."
         )
-        girl_talk = f"Amazing job, {name}! You scored a {score}/60 today. Keep up these wonderful habits to stay in balance!"
     else:
         mcp_guidelines = ctx.state.get("mcp_guidelines", {})
         guidelines = []
         for h in incorrect:
             correct_desc = mcp_guidelines.get(h, "balance activities")
             guidelines.append(f"- {h}: Focus on {correct_desc}")
-                
+            
         prompt = (
-            f"Write exactly 2 clean, funny, and lighthearted jokes or puns about hormones, sleep, or women's midlife struggles to cheer up a perimenopausal woman named {name}.\n"
-            f"Format the output strictly as a JSON list of strings containing exactly 2 elements, e.g. [\"Joke 1\", \"Joke 2\"]"
-        )
-        girl_talk = (
-            f"Hey sis, we've all been there! Balancing hormones is a journey, not a destination. "
-            f"Today we scored {score}/60. To help support your body tomorrow, here are a few gentle reminders:\n"
-            + "\n".join(guidelines) +
-            "\n\nYou've got this! We're in this together."
+            f"Generate exactly 2 unique, clean, funny jokes or puns about hormones, sleep, or women's midlife struggles to cheer up "
+            f"a perimenopausal woman named {name}. Also generate a unique, empathetic daily pep talk (girl talk) addressing "
+            f"her score of {score}/60 and how she can support her body tomorrow based on these suggestions:\n"
+            + "\n".join(guidelines) + "\n"
+            f"Format the output strictly as a JSON object with keys 'jokes' (a list containing exactly 2 jokes) and "
+            f"'pep_talk' (a warm, supportive, unique pep talk message string)."
         )
 
-    # Call Gemini to get the jokes
+    # Call Gemini to get the unique jokes and pep talk
     jokes = []
+    girl_talk = ""
     try:
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
             config=types.GenerateContentConfig(
-                response_mime_type="application/json"
+                response_mime_type="application/json",
+                temperature=1.0
             )
         )
-        jokes = json.loads(response.text)
+        res_data = json.loads(response.text)
+        jokes = res_data.get("jokes", [])
+        girl_talk = res_data.get("pep_talk", "")
     except Exception as e:
-        # Fallback jokes if API call fails
+        # Fallback jokes and pep talk if API call fails or JSON is invalid
         if score >= 50:
             jokes = ["What do hormones and a good joke have in common? They both need perfect timing!"]
+            girl_talk = f"Amazing job, {name}! You scored a {score}/60 today. Keep up these wonderful habits to stay in balance!"
         else:
             jokes = [
                 "My mood swings have got mood swings today!",
                 "I'm not having a hot flash, I'm just heating up the room with my presence!"
             ]
+            mcp_guidelines = ctx.state.get("mcp_guidelines", {})
+            guidelines = []
+            for h in incorrect:
+                correct_desc = mcp_guidelines.get(h, "balance activities")
+                guidelines.append(f"- {h}: Focus on {correct_desc}")
+            girl_talk = (
+                f"Hey sis, we've all been there! Balancing hormones is a journey, not a destination. "
+                f"Today we scored {score}/60. To help support your body tomorrow, here are a few gentle reminders:\n"
+                + "\n".join(guidelines) +
+                "\n\nYou've got this! We're in this together."
+            )
 
     report = {
         "eligible": True,

@@ -1,21 +1,42 @@
-# Perimeter AI — Daily Hormonal Balance Motivator (Agents for Good)
+# Peri-Meter AI — Daily Hormonal Balance Motivator (Agents for Good)
 
-Perimeter AI is a daily hormone-balancing motivatior application designed specifically for perimenopausal women (under the **Agents for Good** track). The application screen eligibility, tracks daily wellness choices, grades performance, and uses a human-in-the-loop coaching portal to review and encourage users who need additional support.
+Peri-Meter AI is a daily hormone-balancing wellness tracking application designed specifically for perimenopausal women under the **Agents for Good** track.
+
+---
+
+## 📌 The Problem
+During perimenopause, women experience significant shifts in key hormones (Estrogen, Progesterone, LH/FSH, Insulin, Cortisol, and Melatonin), leading to symptoms like sleep disruption, hot flashes, fatigue, and mood changes. Managing these symptoms requires consistent daily lifestyle practices (sleep hygiene, stress management, nutrition, exercise). However:
+1. Traditional trackers are overly complex, punitive, or generic (not focused on perimenopause).
+2. Users lack active, direct connection with a professional health coach when their scores drop.
+3. Users struggle to find personalized encouragement and positive reinforcement.
+
+---
+
+## 💡 The Solution
+Peri-Meter AI provides a supportive, encouraging, and validated portal for perimenopausal women to track daily lifestyle behaviors:
+* **Targeted Tracking:** Focused on key wellness practices that directly balance the 6 target hormones.
+* **Positive Reinforcement:** Employs a positive-only scoring system (no penalties) to motivate users.
+* **Dynamic AI Coaching:** Uses Gemini to generate highly personalized daily pep talks and humor based on their scoring.
+* **Human-in-the-Loop (HITL) Integration:** Automatically routes logs with scores under 50 to a certified Health Coach for personalized review and encouragement before release.
+* **Credentials Recovery & Security:** Simple recovery of credentials via email simulation and strict, memorable credential rules for secure logins.
 
 ---
 
 ## 🚀 Key Features
 
 * **Sleek Glassmorphic Pastel UI**: Styled in soothing pastel hues (mint, rose, lavender, peach) with smooth hover micro-animations.
-* **Secure User Authentication**: Sign up and login using a secure, persistent SQLite database.
-* **Dynamic Checkbox Log**: Check multiple daily activities for 6 key hormones: Estrogen, Progesterone, Insulin, Cortisol, LH/FSH, and Melatonin.
-* **Custom Hormonal Scoring Rules**:
-  * First correct activity: **+10 points**.
+* **Secure User Onboarding & Validation**:
+  * **Username:** Maximum 8 characters.
+  * **Password:** Exactly 8 characters (combination of letters, digits, and special characters `!`, `@`, `#` only).
+  * Automatically handles conflicts: Overwrites/deletes older ineligible profiles if a user wants to correct details under the same username.
+* **Credentials Recovery**: A **"Forgot Username/Password?"** retrieval flow that searches the SQLite database by email and sends simulated credentials log alerts.
+* **Positive scoring rules**:
+  * First correct activity: **+10 points** per hormone.
   * Additional correct activities: **+3 points** each.
-  * Incorrect activities: **-5 points** each.
-* **Interactive Monthly Wellness Calendar**: Visualize your daily balance score logs directly on a calendar grid.
-* **Human-In-The-Loop Coaching Review**: Scores below 50 suspend the loop and route to the **Health Coach Portal** for personalized coach notes.
-* **Model Context Protocol (MCP)**: Dynamic stdio-based MCP server (`app/mcp_server.py`) queries correct target wellness guidelines for the agent graph workflow.
+  * No negative point penalties.
+* **Interactive Monthly Wellness Calendar**: View history logs and click on any calendar date to display score breakdown, coach feedback, dynamic pep talk, and jokes.
+* **Human-In-The-Loop (HITL) Portal**: Scores below 50 suspend the workflow loop and route to the **Health Coach Portal** for manual coach review and approval.
+* **Model Context Protocol (MCP)**: A custom stdio-based MCP server (`app/mcp_server.py`) queries correct target wellness guidelines for the agent graph.
 
 ---
 
@@ -36,16 +57,39 @@ The application operates as a directed acyclic graph (DAG) workflow:
 
 ```mermaid
 graph TD
-    START --> parse_input[Parse Input Node]
-    parse_input --> check_eligibility[Check Eligibility Node]
+    %% Define styles for nodes
+    classDef adk fill:#e1bee7,stroke:#8e24aa,stroke-width:2px;
+    classDef hitl fill:#ffcdd2,stroke:#c62828,stroke-width:2px;
+    classDef decision fill:#bbdefb,stroke:#1565c0,stroke-width:2px;
+
+    %% Nodes
+    START((START)):::adk
+    parse_input[Parse User Input Data]:::adk
+    check_eligibility{Check Eligibility}:::decision
+    ineligible_route[Finalize Report: Ineligible]:::adk
+    calculate_score[Calculate Score using Scoring Rules]:::adk
+    score_check{Score >= 50?}:::decision
+    finalize_report[Finalize Report: Generate Girl Talk & Jokes]:::adk
+    request_coach_input([HITL: Suspend for Health Coach]):::hitl
+    coach_review[[Coach Reviews & Sends Encouragement]]:::hitl
+    END((END)):::adk
+
+    %% Edges
+    START --> parse_input
+    parse_input --> check_eligibility
     
-    check_eligibility -- Ineligible --> ineligible_route[Finalize Report Node]
-    check_eligibility -- Eligible --> calculate_score[Calculate Score Node]
+    check_eligibility -- No (Age < 35, Male, etc) --> ineligible_route
+    ineligible_route --> END
+
+    check_eligibility -- Yes --> calculate_score
+    calculate_score --> score_check
     
-    calculate_score -- Score >= 50 --> finalize_report[Finalize Report Node]
-    calculate_score -- Score < 50 --> request_coach_input[Request Coach Input HITL Node]
+    score_check -- Yes --> finalize_report
+    score_check -- No --> request_coach_input
     
-    request_coach_input -- Resumed with coach_note --> finalize_report
+    request_coach_input -. Waits for human input .-> coach_review
+    coach_review -- Resumes Graph with `coach_note` --> finalize_report
+    
     finalize_report --> END
 ```
 
