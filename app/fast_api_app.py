@@ -972,7 +972,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             if (report.girl_talk) {
                 const box = document.createElement('div');
                 box.className = 'girl-talk-box';
-                box.innerHTML = `<div class="girl-talk-title">Daily Motivation & Girl Talk</div><p>${report.girl_talk.replace(/\n/g, '<br>')}</p>`;
+                box.innerHTML = `<div class="girl-talk-title">Daily Motivation & Girl Talk</div><p>${report.girl_talk.replace(/\\\\n/g, '<br>')}</p>`;
                 talkDiv.appendChild(box);
             }
 

@@ -24,7 +24,7 @@ Perimeter AI is a daily hormone-balancing motivatior application designed specif
 * **Language**: Python 3.11+
 * **Framework**: FastAPI (Backend) & Vanilla HTML5/CSS3/JavaScript (Frontend)
 * **Agent Engine**: Google ADK (Agent Development Kit) Graph Workflow
-* **LLM Engine**: Gemini (`gemini-3.1-flash-lite`) via Vertex AI
+* **LLM Engine**: Gemini (`gemini-3.1-pro`) via Vertex AI
 * **Database**: SQLite (Local file `app/perimeter_db.db`)
 * **Package Manager**: UV
 

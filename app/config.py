@@ -1,6 +1,6 @@
 # Configuration for PeriMeter AI
 
-MODEL_NAME = "gemini-3.1-flash-lite"
+MODEL_NAME = "gemini-3.1-pro"
 
 # The 6 hormones and their target activities
 HORMONE_ACTIVITIES = {
