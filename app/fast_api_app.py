@@ -24,7 +24,7 @@ from app.database import (
     get_user_logs
 )
 
-app = FastAPI(title="Perimeter AI - Hormonal Balance Motivator")
+app = FastAPI(title="Peri-Meter AI - Hormonal Balance Motivator")
 
 # Initialize ADK runtime services
 session_service = InMemorySessionService()
@@ -264,7 +264,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Perimeter AI - Hormonal Balance Motivator</title>
+    <title>Peri-Meter AI - Hormonal Balance Motivator</title>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -653,7 +653,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
 
     <header>
-        <h1>Perimeter AI</h1>
+        <h1>Peri-Meter AI</h1>
         <p>Your Gentle Guide to Daily Hormonal Balance • Agents for Good</p>
         <div id="user-header-badge" class="user-profile-badge hidden">
             <span id="user-display-name">Guest</span>
@@ -674,7 +674,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
             
             <div id="login-form" class="auth-container">
-                <h2>Login to Perimeter AI</h2>
+                <h2>Login to Peri-Meter AI</h2>
                 <div class="form-group">
                     <label for="login-username">Username</label>
                     <input type="text" id="login-username" placeholder="Enter username">
@@ -755,10 +755,6 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 <div id="coach-notes-display"></div>
                 <div id="girl-talk-display"></div>
                 <div id="jokes-display"></div>
-                <div class="calendar-container">
-                    <h2>Monthly Wellness Calendar</h2>
-                    <div id="tracker-calendar"></div>
-                </div>
                 <button class="btn btn-primary" onclick="resetApp()" style="margin-top: 2rem;">Log Tomorrow's Activities</button>
             </div>
 
@@ -766,6 +762,11 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 <h2>Screening Result</h2>
                 <div class="error-banner" id="error-message"></div>
                 <button class="btn btn-primary" onclick="handleLogout()" style="margin-top: 2rem;">Log Out & Sign in Correctly</button>
+            </div>
+
+            <div id="calendar-wrapper" class="calendar-container hidden">
+                <h2>Monthly Wellness Calendar</h2>
+                <div id="tracker-calendar"></div>
             </div>
         </section>
 
@@ -865,6 +866,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         function handleLogout() {
+            if (pollInterval) clearInterval(pollInterval);
             loggedInUser = null;
             localStorage.removeItem('perimeter_user');
             location.reload();
@@ -875,7 +877,31 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('user-header-badge').classList.remove('hidden');
             document.getElementById('section-auth').classList.add('hidden');
             document.getElementById('section-app').classList.remove('hidden');
-            resetApp();
+            
+            // Check if user has already logged today
+            fetch('/api/logs?user_id=' + loggedInUser.id)
+                .then(res => res.json())
+                .then(logs => {
+                    renderCalendar(logs);
+                    document.getElementById('calendar-wrapper').classList.remove('hidden');
+                    const todayStr = new Date().toISOString().split('T')[0];
+                    const todaysLog = logs.find(l => l.date === todayStr);
+                    if (todaysLog) {
+                        showDashboard({
+                            eligible: true,
+                            score: todaysLog.score,
+                            coach_note: todaysLog.coach_note,
+                            girl_talk: todaysLog.girl_talk,
+                            jokes: JSON.parse(todaysLog.jokes)
+                        });
+                    } else {
+                        resetApp();
+                    }
+                })
+                .catch(err => {
+                    console.error("Error loading logs:", err);
+                    resetApp();
+                });
         }
 
         function switchTab(tab) {
@@ -919,6 +945,22 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 });
         }
 
+        function startPolling(sessionId) {
+            if (pollInterval) clearInterval(pollInterval);
+            pollInterval = setInterval(() => {
+                fetch('/api/status/' + sessionId)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'completed') {
+                        clearInterval(pollInterval);
+                        document.getElementById('pending-review-notice').classList.add('hidden');
+                        showDashboard(data.data);
+                    }
+                })
+                .catch(err => console.error("Error polling status:", err));
+            }, 3000);
+        }
+
         function submitQuiz() {
             const answers = {};
             document.querySelectorAll('.hormone-section').forEach(sec => {
@@ -930,12 +972,24 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             fetch('/api/submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: loggedInUser.id, answers })
+                body: JSON.stringify({
+                    user_id: loggedInUser.id,
+                    name: loggedInUser.name,
+                    age: loggedInUser.age,
+                    gender: loggedInUser.gender,
+                    perimenopause_status: loggedInUser.perimenopause_status,
+                    answers
+                })
             })
             .then(res => res.json())
             .then(resData => {
                 document.getElementById('quiz-form').classList.add('hidden');
-                if (resData.status === 'completed') showDashboard(resData.data);
+                if (resData.status === 'completed') {
+                    showDashboard(resData.data);
+                } else if (resData.status === 'pending_coach_review') {
+                    document.getElementById('pending-review-notice').classList.remove('hidden');
+                    startPolling(resData.session_id);
+                }
             });
         }
 
@@ -945,6 +999,7 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             if (!report.eligible) {
                 document.getElementById('error-message').innerText = report.error_message;
                 document.getElementById('screening-error').classList.remove('hidden');
+                document.getElementById('calendar-wrapper').classList.add('hidden');
                 return;
             }
 
@@ -992,11 +1047,19 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
                 });
             }
 
-            fetch('/api/logs?user_id=' + loggedInUser.id)
-                .then(res => res.json())
-                .then(logs => renderCalendar(logs));
+            refreshCalendar();
                 
             document.getElementById('results-dashboard').classList.remove('hidden');
+        }
+
+        function refreshCalendar() {
+            if (!loggedInUser) return;
+            fetch('/api/logs?user_id=' + loggedInUser.id)
+                .then(res => res.json())
+                .then(logs => {
+                    renderCalendar(logs);
+                    document.getElementById('calendar-wrapper').classList.remove('hidden');
+                });
         }
 
         function renderCalendar(logs) {
@@ -1068,8 +1131,11 @@ INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         function resetApp() {
+            if (pollInterval) clearInterval(pollInterval);
             document.getElementById('results-dashboard').classList.add('hidden');
+            document.getElementById('pending-review-notice').classList.add('hidden');
             loadQuizQuestions();
+            refreshCalendar();
         }
 
         function loadPendingReviews() {

@@ -179,7 +179,7 @@ def test_multiple_options_scoring() -> None:
     answers = {
         "Estrogen": [
             "Strength training or eating cruciferous vegetables", # correct
-            "Skipping hydration and eating processed foods"       # incorrect
+            "Deep breathing exercises for 10 minutes"       # incorrect
         ],
         "Progesterone": [
             "Breathwork/meditation, zinc, or limiting alcohol"    # correct

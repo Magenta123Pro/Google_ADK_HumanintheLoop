@@ -1,6 +1,6 @@
-# BDD Specification - PeriMeter AI
+# BDD Specification - Peri-Meter AI
 
-## Feature: Hormonal Balance Motivator Agent (PeriMeter AI)
+## Feature: Hormonal Balance Motivator Agent (Peri-Meter AI)
   As a perimenopausal woman,
   I want to track my daily activities that affect my hormone balance
   So that I can receive feedback, motivation, and healthy suggestions.
@@ -16,7 +16,7 @@
 
     Scoring Rule:
     - +10 points for each correct activity selected
-    - -5 points for each incorrect/unhealthy activity selected
+    - -5 points for each incorrect (but positive wellness) activity selected
 
   ## Scenario 1: Onboarding with ineligible or invalid details
     Given the onboarding form is presented
@@ -26,17 +26,17 @@
       | Bob     | 40  | male   | no                     |
       | Carol   | 30  | female | yes                    |
     Then the app must reject the registration
-    And display a friendly message explaining that PeriMeter AI is designed specifically for women aged 35+ undergoing perimenopause.
+    And display a friendly message explaining that Peri-Meter AI is designed specifically for women aged 35+ undergoing perimenopause.
 
   ## Scenario 2: Eligible user with high daily score (>= 50)
     Given the user has completed onboarding successfully
     When they submit their daily activities:
-      - Estrogen: "Strength training" (+10)
-      - Progesterone: "Breathwork and meditation" (+10)
-      - Insulin: "Fiber-first eating" (+10)
-      - Cortisol: "Nature immersion" (+10)
-      - LH & FSH: "Adequate caloric intake" (+10)
-      - Melatonin: "Blue-light blocking" (+10)
+      - Estrogen: "Strength training or eating cruciferous vegetables" (+10)
+      - Progesterone: "Breathwork/meditation, zinc, or limiting alcohol" (+10)
+      - Insulin: "Fiber-first eating, post-meal walk, or 12-hour rest" (+10)
+      - Cortisol: "Caffeine elimination after noon, nature immersion, or stretching" (+10)
+      - LH & FSH: "Adequate calories, consistent sleep, or acupuncture" (+10)
+      - Melatonin: "Morning sunlight exposure, blue-light block, or magnesium" (+10)
     Then the calculated score should be 60
     And the app should display the score of 60
     And the app should generate and display 1 lighthearted joke to make them smile.
@@ -44,12 +44,12 @@
   ## Scenario 3: Eligible user with low daily score (< 50) requiring HITL Coach Review
     Given the user has completed onboarding successfully
     When they submit their daily activities:
-      - Estrogen: "Strength training" (+10)
-      - Progesterone: "Drinking excessive alcohol" (-5)
-      - Insulin: "Fiber-first eating" (+10)
-      - Cortisol: "Drinking late afternoon coffee" (-5)
-      - LH & FSH: "Adequate caloric intake" (+10)
-      - Melatonin: "Magnesium glycinate" (+10)
+      - Estrogen: "Strength training or eating cruciferous vegetables" (+10)
+      - Progesterone: "Eating fiber-rich meals first" (-5) (incorrect for Progesterone)
+      - Insulin: "Fiber-first eating, post-meal walk, or 12-hour rest" (+10)
+      - Cortisol: "Consuming magnesium glycinate before sleep" (-5) (incorrect for Cortisol)
+      - LH & FSH: "Adequate calories, consistent sleep, or acupuncture" (+10)
+      - Melatonin: "Morning sunlight exposure, blue-light block, or magnesium" (+10)
     Then the calculated score should be 30
     And the agent workflow should suspend and enter "Pending Coach Review" state
     When the Health Coach logs in, reviews the details, and submits a custom motivational note
